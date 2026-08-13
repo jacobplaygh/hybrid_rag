@@ -1,0 +1,45 @@
+.DS_Store
+Thumbs.db
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Build outputs
+bin/
+obj/
+out/
+
+# Node
+node_modules/
+npm-debug.log
+yarn-error.log
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+env/
+venv/
+*.egg-info/
+
+# IDEs
+.vscode/
+.idea/
+
+# Environment files
+.env
+.env.local
+
+# Logs
+logs/
+*.log
+
+# Package artifacts
+dist/
+build/
+coverage/
+coverage.*
