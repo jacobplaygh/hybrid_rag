@@ -43,3 +43,10 @@ dist/
 build/
 coverage/
 coverage.*
+
+# Local data and vector DB files
+data/
+data/**
+*.bin
+*.db
+*.sqlite
