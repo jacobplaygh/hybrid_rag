@@ -50,3 +50,12 @@ data/**
 *.bin
 *.db
 *.sqlite
+tests/tmp_test_doc/sample.txt
+tmp-test-store/chroma.sqlite3
+tools/eval_queries.jsonl
+tools/eval_results.json
+uploaded_docs/document_metadata.json
+uploaded_docs/engine_performance.txt
+uploaded_docs/sample.txt
+uploaded_docs/uploaded_docs/document_metadata.json
+uploaded_docs/uploaded_docs/sample.txt
