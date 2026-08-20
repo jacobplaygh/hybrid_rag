@@ -242,10 +242,10 @@ class HybridRetriever:
 
         try:
             prompt_docs = []
-            for idx, doc in enumerate(results[:top_k]):
+            for idx, doc in enumerate(results[:top_k * 2]):
                 snippet = doc.content.replace("\n", " ")
-                if len(snippet) > 300:
-                    snippet = snippet[:297] + "..."
+                if len(snippet) > 1000:
+                    snippet = snippet[:997] + "..."
                 prompt_docs.append(
                     f"{idx+1}. id={doc.doc_id} score={doc.score:.2f}\n{snippet}\n"
                 )

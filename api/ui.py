@@ -111,6 +111,34 @@ HTML_PAGE = """
       responseArea.textContent = JSON.stringify(result, null, 2);
     }
 
+    function appendStreamContent(content) {
+      const text = String(content ?? '');
+      if (!text) return;
+
+      const previous = responseArea.textContent;
+      const needsSpace = previous && /[A-Za-z0-9]$/.test(previous) && /^[A-Za-z0-9]/.test(text);
+      responseArea.textContent += (needsSpace ? ' ' : '') + text;
+    }
+
+    function appendSsePayload(rawData) {
+      try {
+        const data = JSON.parse(rawData);
+        if (data && data.error) throw new Error(data.error);
+        appendStreamContent(data && data.content !== undefined ? data.content : data);
+      } catch (error) {
+        if (!(error instanceof SyntaxError)) {
+          throw error;
+        }
+        appendStreamContent(rawData);
+      }
+    }
+
+    function processSseLine(line) {
+      if (!line.startsWith('data: ')) return;
+      const rawData = line.substring(6);
+      if (rawData) appendSsePayload(rawData);
+    }
+
     async function callQuery() {
       try {
         responseArea.textContent = 'Running query...';
@@ -132,18 +160,38 @@ HTML_PAGE = """
         });
 
         if (isStreaming) {
+          if (!res.ok) {
+            const errorBody = await res.text();
+            throw new Error(`HTTP ${res.status}: ${errorBody}`);
+          }
+          if (!res.body) {
+            throw new Error('The browser did not provide a response stream.');
+          }
+
           responseArea.textContent = '';
           responseArea.classList.add('streaming-active');
           const reader = res.body.getReader();
           const decoder = new TextDecoder();
-          while (true) {
-            const { value, done } = await reader.read();
-            if (done) break;
-            const chunk = decoder.decode(value, { stream: true });
-            responseArea.textContent += chunk;
-            responseArea.scrollTop = responseArea.scrollHeight;
+          let buffer = '';
+          try {
+            while (true) {
+              const { value, done } = await reader.read();
+              buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+              const lines = buffer.split(/\\r?\\n/);
+              buffer = lines.pop() || '';
+
+              for (const line of lines) {
+                processSseLine(line);
+                responseArea.scrollTop = responseArea.scrollHeight;
+              }
+
+              if (done) break;
+            }
+
+            processSseLine(buffer.trim());
+          } finally {
+            responseArea.classList.remove('streaming-active');
           }
-          responseArea.classList.remove('streaming-active');
         } else {
           const body = await res.json();
           await renderResult({ status: res.status, body });
@@ -209,4 +257,7 @@ HTML_PAGE = """
 
 @router.get("/ui", response_class=HTMLResponse, tags=["UI"])
 async def ui_page():
-    return HTMLResponse(content=HTML_PAGE)
+  return HTMLResponse(
+    content=HTML_PAGE,
+    headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
+  )

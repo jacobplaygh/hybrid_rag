@@ -142,24 +142,36 @@ async def query_stream(request: QueryRequest):
     """Stream RAG query response."""
     try:
         rag = get_rag_system()
-        
-        # Call HybridRAG with stream=True to get the async generator
-        generator = await rag.query(
-            query=request.query,
-            mode=request.mode,
-            top_k=request.top_k,
-            model=request.model,
-            stream=True,
-        )
+        generator = await rag.query_stream(request)
         
         async def stream_wrapper():
-            async for chunk in generator:
-                # If chunk is a string, yield it directly. 
-                # If it's a dict/object, yield as JSON.
-                if isinstance(chunk, str):
-                    yield chunk.encode()
-                else:
-                    yield json.dumps(chunk).encode() + b"\n"
+            try:
+                previous_content = ""
+                async for chunk in generator:
+                    # Extract content if chunk is an object (e.g. AIMessageChunk)
+                    content = chunk
+                    if hasattr(chunk, "content"):
+                        content = chunk.content
+                    
+                    if content is None:
+                        continue
+
+                    content = str(content)
+                    if (
+                        previous_content
+                        and previous_content[-1].isalnum()
+                        and content
+                        and content[0].isalnum()
+                    ):
+                        content = " " + content
+                    previous_content += content
+
+                    # Encode content so newlines and SSE delimiters remain part of one event.
+                    data = f"data: {json.dumps({'content': content})}\n\n"
+                    yield data.encode("utf-8")
+            except Exception as e:
+                logger.error(f"Error during stream generation: {e}", exc_info=True)
+                yield f"data: {json.dumps({'error': str(e)})}\n\n".encode("utf-8")
         
         return StreamingResponse(stream_wrapper(), media_type="text/event-stream")
     
@@ -233,7 +245,7 @@ async def chat_stream(request: ChatRequest):
         rag = get_rag_system()
         
         # Call HybridRAG with stream=True to get the async generator
-        generator = await rag.chat(
+        generator = rag.chat(
             message=request.message,
             session_id=request.session_id,
             model=request.model,
@@ -245,9 +257,13 @@ async def chat_stream(request: ChatRequest):
                 # If chunk is a string, yield it directly. 
                 # If it's a dict/object, yield as JSON.
                 if isinstance(chunk, str):
-                    yield chunk.encode()
+                    content = chunk
                 else:
-                    yield json.dumps(chunk).encode() + b"\n"
+                    content = json.dumps(chunk)
+                
+                # SSE format: "data: <content>\n\n"
+                data = f"data: {content}\n\n"
+                yield data.encode("utf-8")
         
         return StreamingResponse(stream_wrapper(), media_type="text/event-stream")
     

@@ -122,6 +122,27 @@ class HybridRAG:
         else:
             logger.info("🚀 Initialized Hybrid RAG System")
     
+    async def query_stream(self, request: Any):
+        """
+        Wrapper for the query method to support streaming from the API.
+        Unpacks QueryRequest and calls query(stream=True).
+        """
+        # Handle both Pydantic models and dicts
+        if hasattr(request, "dict"):
+            req_dict = request.dict()
+        elif isinstance(request, dict):
+            req_dict = request
+        else:
+            req_dict = vars(request)
+
+        return await self.query(
+            query=req_dict.get("query"),
+            mode=req_dict.get("mode", "simple"),
+            top_k=req_dict.get("top_k", 5),
+            model=req_dict.get("model"),
+            stream=True
+        )
+
     async def ensure_keyword_index(self):
         """Ensure BM25 keyword index is initialized for hybrid retrieval."""
         if self.retriever.bm25 is not None:
@@ -251,8 +272,9 @@ class HybridRAG:
             await self.ensure_keyword_index()
             
             # --- Query Understanding Phase ---
+            # Skip query understanding for streaming simple queries to reduce latency
             analysis = {"intent": "FACTUAL", "entities": [], "sub_queries": []}
-            if self.query_understanding:
+            if self.query_understanding and not (stream and mode == "simple"):
                 analysis = await self.query_understanding.analyze(query)
                 logger.info(f"🧠 Query Analysis: Intent={analysis['intent']}, Entities={analysis['entities']}")
 
@@ -312,13 +334,17 @@ class HybridRAG:
                 # Standard retrieval flow
                 context_docs, retrieval_id = await self.retriever.retrieve(
                     query,
-                    top_k=top_k * 5,  # Retrieve more for reranking
+                    top_k=top_k * 5 if not (stream and mode == "simple") else top_k,  # Retrieve more for reranking if not simple stream
                     alpha=0.7,  # 70% semantic, 30% keyword
                 )
                 
-                # Rerank results to improve precision
-                reranked_docs = self.reranker.rerank(query, context_docs, top_k=top_k)
-                context_docs = reranked_docs if reranked_docs is not None else []
+                # Rerank results to improve precision, unless it's a simple stream where speed is priority
+                if not (stream and mode == "simple"):
+                    reranked_docs = self.reranker.rerank(query, context_docs, top_k=top_k)
+                    context_docs = reranked_docs if reranked_docs is not None else []
+                else:
+                    # For simple stream, just take the top_k from hybrid retrieval
+                    context_docs = context_docs[:top_k]
             
             retrieval_end = datetime.now(timezone.utc)
             retrieval_time_ms = (retrieval_end - retrieval_start).total_seconds() * 1000
@@ -486,7 +512,6 @@ class HybridRAG:
             self.query_history[query_id] = result
             
             if self.tracer:
-                # ...existing code...
                 self.tracer.trace_llm_call(
                     model=llm.model if hasattr(llm, 'model') else "unknown",
                     prompt=prompt_text,
@@ -561,73 +586,21 @@ class HybridRAG:
             full_response.append(chunk)
             yield chunk
         
-        final_text = "".join(full_response)
-        
         # Update metadata with the actual full response
-        result_metadata["response"] = final_text
-        
-        # --- Deferred Metrics and Analytics ---
-        mode = result_metadata["mode"]
-        query_id = result_metadata["query_id"]
-        query_duration_ms = result_metadata["query_time_ms"]
-        tokens_used_val = result_metadata["tokens_used"]
-        confidence = result_metadata["confidence_score"]
-        quality = result_metadata["quality_metrics"]
-        
-        # Log to Analytics
-        try:
-            self.analytics.log_query({
-                "query_id": query_id,
-                "query": result_metadata["query"],
-                "mode": mode,
-                "intent": "STREAMED", # Simplified for deferred log
-                "response_time_ms": query_duration_ms,
-                "tokens_used": tokens_used_val,
-                "cache_status": "MISS",
-                "confidence_score": confidence.overall_score if (confidence and hasattr(confidence, 'overall_score')) else (confidence if confidence else 0.0),
-                "status": "success"
-            })
-        except Exception as e:
-            logger.warning(f"Deferred analytics logging failed: {e}")
+        result_metadata["response"] = "".join(full_response)
 
-        # Record to Prometheus
-        try:
-            # We need to access the gauges from the class instance
-            # Assuming these are initialized in __init__ as self.ndcg_gauge, etc.
-            if hasattr(self, 'ndcg_gauge') and self.ndcg_gauge:
-                self.ndcg_gauge.labels(mode=mode).set(quality)
-            if hasattr(self, 'confidence_gauge') and self.confidence_gauge and confidence:
-                confidence_val = confidence.overall_score if hasattr(confidence, 'overall_score') else confidence
-                self.confidence_gauge.labels(mode=mode).set(confidence_val)
-        except Exception as e:
-            logger.warning(f"Deferred Prometheus update failed: {e}")
-        # ---------------------------------------
-
-        # Store in history and cache
-        query_id = result_metadata["query_id"]
-        self.query_history[query_id] = result_metadata
+    def _wrap_chat_stream(self, response, result_metadata, session_id):
+        """
+        Returns an async generator that wraps _stream_response and updates memory upon completion.
+        """
+        async def generator():
+            async for chunk in self._stream_response(response, result_metadata):
+                yield chunk
+            
+            # After stream completes, add the full response to memory
+            self.memory.add_message(session_id, "assistant", result_metadata["response"])
         
-        # Cache if applicable
-        if self._should_cache(mode):
-            cache_key = self._build_cache_key(
-                result_metadata["query"], 
-                mode, 
-                result_metadata.get("top_k", 5), 
-                result_metadata["model_used"]
-            )
-            self.query_cache[cache_key] = {
-                "query": result_metadata["query"],
-                "response": final_text,
-                "mode": mode,
-                "retrieved_docs": result_metadata["retrieved_docs"],
-                "model_used": result_metadata["model_used"],
-                "query_time_ms": result_metadata["query_time_ms"],
-                "tokens_used": result_metadata["tokens_used"],
-                "timestamp": result_metadata["timestamp"],
-                "retrieval_id": result_metadata["retrieval_id"],
-            }
-            if self.semantic_cache:
-                self.semantic_cache.set(result_metadata["query"], result_metadata)
+        return generator()
 
     async def chat(
         self,
@@ -735,13 +708,7 @@ class HybridRAG:
                 }
                 
                 # Wrap the stream to handle memory update and metrics
-                async def chat_stream_wrapper():
-                    async for chunk in self._stream_response(response, result_metadata):
-                        yield chunk
-                    # After stream completes, add the full response to memory
-                    self.memory.add_message(session_id, "assistant", result_metadata["response"])
-                
-                return chat_stream_wrapper()
+                return self._wrap_chat_stream(response, result_metadata, session_id)
 
             logger.info(f"✅ Chat completed in {chat_time:.1f}ms")
 

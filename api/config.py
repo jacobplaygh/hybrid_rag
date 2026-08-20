@@ -65,7 +65,7 @@ class Settings(BaseSettings):
     MAX_CONTEXT_TOKENS: int = int(os.getenv("MAX_CONTEXT_TOKENS", 80000))
     
     # Retrieval
-    RETRIEVAL_K: int = int(os.getenv("RETRIEVAL_K", 3))
+    RETRIEVAL_K: int = int(os.getenv("RETRIEVAL_K", 10))
     RETRIEVAL_RERANK: bool = os.getenv("RETRIEVAL_RERANK", "True").lower() == "true"
     
     # LangSmith (Observability)

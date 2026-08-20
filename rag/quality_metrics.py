@@ -27,6 +27,15 @@ class QualityMetricsCalculator:
     """Calculate quality metrics for retrieval results."""
     
     @staticmethod
+    def _score(result: Any) -> float:
+        """Read relevance from both mapping and RetrievedDoc results."""
+        if isinstance(result, dict):
+            value = result.get("relevance_score", result.get("score", 0))
+        else:
+            value = getattr(result, "relevance_score", getattr(result, "score", 0))
+        return float(value or 0)
+
+    @staticmethod
     def calculate_ndcg(results: List[Dict[str, Any]], k: int = 3) -> float:
         """
         Calculate NDCG@k (Normalized Discounted Cumulative Gain).
@@ -46,7 +55,7 @@ class QualityMetricsCalculator:
         dcg = 0.0
         for i, result in enumerate(results[:k]):
             # Use relevance_score if available, otherwise fallback to retrieval score
-            relevance = float(result.get('relevance_score', result.get('score', 0)))
+            relevance = QualityMetricsCalculator._score(result)
             # DCG formula: rel_i / log2(i+2)
             # Using i+2 so position 0 = log2(2) = 1
             dcg += relevance / math.log2(i + 2)
@@ -54,12 +63,12 @@ class QualityMetricsCalculator:
         # Calculate ideal DCG (perfect ranking)
         sorted_results = sorted(
             results,
-            key=lambda x: float(x.get('relevance_score', x.get('score', 0))),
+            key=QualityMetricsCalculator._score,
             reverse=True
         )
         idcg = 0.0
         for i, result in enumerate(sorted_results[:k]):
-            relevance = float(result.get('relevance_score', result.get('score', 0)))
+            relevance = QualityMetricsCalculator._score(result)
             idcg += relevance / math.log2(i + 2)
         
         # NDCG = DCG / IDCG (avoid division by zero)
@@ -85,7 +94,7 @@ class QualityMetricsCalculator:
         """
         for i, result in enumerate(results):
             # Use relevance_score if available, otherwise fallback to retrieval score
-            score = float(result.get('relevance_score', result.get('score', 0)))
+            score = QualityMetricsCalculator._score(result)
             if score >= relevance_threshold:
                 # Rank starts at 1
                 return 1.0 / (i + 1)
@@ -115,7 +124,7 @@ class QualityMetricsCalculator:
         relevant_count = 0
         for result in results[:k]:
             # Use relevance_score if available, otherwise fallback to retrieval score
-            score = float(result.get('relevance_score', result.get('score', 0)))
+            score = QualityMetricsCalculator._score(result)
             if score >= relevance_threshold:
                 relevant_count += 1
         
@@ -147,7 +156,7 @@ class QualityMetricsCalculator:
         relevant_count = 0
         for result in results[:k]:
             # Use relevance_score if available, otherwise fallback to retrieval score
-            score = float(result.get('relevance_score', result.get('score', 0)))
+            score = QualityMetricsCalculator._score(result)
             if score >= relevance_threshold:
                 relevant_count += 1
         

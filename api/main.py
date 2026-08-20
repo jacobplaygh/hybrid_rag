@@ -273,12 +273,6 @@ async def root():
         "health": "/health",
     }
 
-
-@app.get("/health")
-async def health_check_simple():
-    """Basic health check endpoint."""
-    return {"status": "healthy", "timestamp": datetime.now(timezone.utc).isoformat()}
-
 @app.get("/analytics/summary")
 async def get_analytics_summary():
     """Retrieve a summary of query patterns and system performance."""
