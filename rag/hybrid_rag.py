@@ -1,6 +1,8 @@
 """Hybrid RAG orchestrator combining LangChain + LlamaIndex."""
 
+import asyncio
 import copy
+import inspect
 import logging
 import re
 import uuid
@@ -186,7 +188,7 @@ class HybridRAG:
         # 1. Try Semantic Cache first
         cache_status = "MISS"
         if self.semantic_cache:
-            cached_result = self.semantic_cache.get(query)
+            cached_result = await asyncio.to_thread(self.semantic_cache.get, query)
             if cached_result:
                 logger.info("♻️ Semantic cache hit!")
                 cache_status = "HIT"
@@ -378,7 +380,12 @@ class HybridRAG:
                         response = await self._simple_rag(query, context_text, llm)
                 elif mode == "multi-turn":
                     if stream:
-                        response = self.chains["multi_turn"].astream(query, context_text)
+                        history = self.memory.get_context("default_session")
+                        response = self.chains["multi_turn"].astream(
+                            query=query,
+                            history=history,
+                            context=context_text,
+                        )
                     else:
                         response = await self._multi_turn_chat(query, context_text, llm)
                 elif mode == "decompose":
@@ -582,12 +589,24 @@ class HybridRAG:
         is handled and the final response is cached/logged.
         """
         full_response = []
-        async for chunk in response_generator:
+        async for chunk in self._iter_stream_chunks(response_generator):
             full_response.append(chunk)
             yield chunk
         
         # Update metadata with the actual full response
         result_metadata["response"] = "".join(full_response)
+
+    async def _iter_stream_chunks(self, stream):
+        """Flatten nested async streams and normalize message chunks to text."""
+        async for chunk in stream:
+            if inspect.isasyncgen(chunk) or hasattr(chunk, "__aiter__"):
+                async for nested_chunk in self._iter_stream_chunks(chunk):
+                    yield nested_chunk
+                continue
+
+            content = getattr(chunk, "content", chunk)
+            if content is not None:
+                yield str(content)
 
     def _wrap_chat_stream(self, response, result_metadata, session_id):
         """

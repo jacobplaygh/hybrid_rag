@@ -54,8 +54,11 @@ class SemanticCache:
         Returns:
             The cached response dictionary if a hit is found, else None.
         """
+        if not self.cache:
+            return None
+
         query_emb = self._get_embedding(query)
-        if query_emb is None or not self.cache:
+        if query_emb is None:
             return None
 
         best_sim = -1.0

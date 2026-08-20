@@ -1,5 +1,6 @@
 """Advanced retrieval with semantic + keyword search."""
 
+import asyncio
 import json
 import logging
 from typing import List, Dict, Any, Optional
@@ -164,7 +165,7 @@ class HybridRetriever:
         
         try:
             query_tokens = query.lower().split()
-            scores = self.bm25.get_scores(query_tokens)
+            scores = await asyncio.to_thread(self.bm25.get_scores, query_tokens)
             
             # Get top-k indices
             ranked_indices = sorted(

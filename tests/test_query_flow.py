@@ -54,6 +54,27 @@ def test_simple_rag_retries_once_on_transient_gateway_timeout():
     assert response == "recovered response"
 
 
+def test_stream_response_flattens_nested_async_generators():
+    async def nested_stream():
+        yield "hello"
+        yield " world"
+
+    async def response_stream():
+        yield nested_stream()
+        yield "!"
+
+    async def collect_response():
+        rag = HybridRAG.__new__(HybridRAG)
+        metadata = {}
+        chunks = [chunk async for chunk in rag._stream_response(response_stream(), metadata)]
+        return chunks, metadata
+
+    chunks, metadata = asyncio.run(collect_response())
+
+    assert chunks == ["hello", " world", "!"]
+    assert metadata["response"] == "hello world!"
+
+
 def test_chat_falls_back_to_document_response_when_llm_raises():
     class FailingChain:
         async def invoke(self, **kwargs):
@@ -76,6 +97,79 @@ def test_chat_falls_back_to_document_response_when_llm_raises():
     result = asyncio.run(rag.chat("hello", "session-1"))
 
     assert result["response"].startswith("I found relevant information")
+
+
+def test_chat_stream_passes_history_and_updates_memory():
+    class StreamingChain:
+        def __init__(self):
+            self.arguments = None
+
+        async def astream(self, **kwargs):
+            self.arguments = kwargs
+            yield "streamed"
+            yield " response"
+
+    async def fake_retrieve(*args, **kwargs):
+        doc = SimpleNamespace(content="document context", source="doc.txt", score=1.0)
+        doc.to_dict = lambda: {
+            "content": doc.content,
+            "source": doc.source,
+            "score": doc.score,
+        }
+        return [doc], "retrieval-id"
+
+    rag = HybridRAG(vector_store=object(), chat_llm=None, reasoning_llm=None, structured_llm=None, tracer=None)
+    chain = StreamingChain()
+    rag.chains = {"multi_turn": chain}
+    rag.retriever = SimpleNamespace(
+        bm25=object(),
+        retrieve=fake_retrieve,
+        get_retrieval_diagnostics=lambda _id: {"retrieval_time_ms": 0},
+    )
+    rag._select_llm = lambda *args, **kwargs: object()
+    rag.memory.add_message("session-1", "user", "Earlier question")
+    rag.memory.add_message("session-1", "assistant", "Earlier answer")
+
+    async def collect_response():
+        generator = await rag.chat("Follow-up question", "session-1", stream=True)
+        return [chunk async for chunk in generator]
+
+    chunks = asyncio.run(collect_response())
+
+    assert chunks == ["streamed", " response"]
+    assert chain.arguments == {
+        "query": "Follow-up question",
+        "history": "USER: Earlier question\nASSISTANT: Earlier answer\nUSER: Follow-up question",
+        "context": "[doc.txt]\ndocument context",
+    }
+    assert "ASSISTANT: streamed response" in rag.memory.get_context("session-1")
+
+
+def test_multi_turn_chat_uses_session_history():
+    class InvokingChain:
+        def __init__(self):
+            self.arguments = None
+
+        async def invoke(self, **kwargs):
+            self.arguments = kwargs
+            return "new answer"
+
+    rag = HybridRAG.__new__(HybridRAG)
+    rag.memory = HybridRAG(vector_store=object(), chat_llm=None, reasoning_llm=None, structured_llm=None, tracer=None).memory
+    chain = InvokingChain()
+    rag.chains = {"multi_turn": chain}
+    rag.memory.add_message("session-2", "user", "Previous question")
+    rag.memory.add_message("session-2", "assistant", "Previous answer")
+
+    response = asyncio.run(rag._multi_turn_chat("New question", "context", object(), "session-2"))
+
+    assert response == "new answer"
+    assert chain.arguments == {
+        "query": "New question",
+        "history": "USER: Previous question\nASSISTANT: Previous answer",
+        "context": "context",
+    }
+    assert "ASSISTANT: new answer" in rag.memory.get_context("session-2")
 
 
 def test_query_returns_answer_from_uploaded_documents():
