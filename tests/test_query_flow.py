@@ -73,6 +73,8 @@ def test_stream_response_flattens_nested_async_generators():
 
     assert chunks == ["hello", " world", "!"]
     assert metadata["response"] == "hello world!"
+    assert metadata["first_token_time_ms"] >= 0
+    assert metadata["stream_duration_ms"] >= metadata["first_token_time_ms"]
 
 
 def test_chat_falls_back_to_document_response_when_llm_raises():

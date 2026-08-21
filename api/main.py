@@ -285,6 +285,16 @@ async def get_analytics_summary():
         logger.error(f"Failed to retrieve analytics summary: {e}")
         raise HTTPException(status_code=500, detail="Internal server error retrieving analytics")
 
+@app.get("/analytics/latency")
+async def get_analytics_latency():
+    """Retrieve stage-level latency and cache correlation metrics."""
+    try:
+        rag = app.state.rag
+        return rag.analytics.analyze_latency()
+    except Exception as e:
+        logger.error(f"Failed to retrieve analytics latency: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error retrieving analytics latency")
+
 @app.get("/analytics/failures")
 async def get_analytics_failures(limit: int = 10):
     """Retrieve a list of failed or low-confidence queries."""

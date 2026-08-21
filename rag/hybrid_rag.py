@@ -5,6 +5,7 @@ import copy
 import inspect
 import logging
 import re
+import time
 import uuid
 from typing import List, Optional, Dict, Any
 from datetime import datetime, timezone
@@ -593,12 +594,25 @@ class HybridRAG:
         is handled and the final response is cached/logged.
         """
         full_response = []
+        stream_start = time.perf_counter()
+        first_chunk_time = None
         async for chunk in self._iter_stream_chunks(response_generator):
+            if first_chunk_time is None:
+                first_chunk_time = (time.perf_counter() - stream_start) * 1000
             full_response.append(chunk)
             yield chunk
         
         # Update metadata with the actual full response
         result_metadata["response"] = "".join(full_response)
+        result_metadata["first_token_time_ms"] = first_chunk_time or 0.0
+        result_metadata["stream_duration_ms"] = (time.perf_counter() - stream_start) * 1000
+        if hasattr(self, "analytics"):
+            self.analytics.log_query({
+                **result_metadata,
+                "response_time_ms": result_metadata["stream_duration_ms"],
+                "cache_status": result_metadata.get("cache_status", "MISS"),
+                "status": "success",
+            })
 
     async def _iter_stream_chunks(self, stream):
         """Flatten nested async streams and normalize message chunks to text."""

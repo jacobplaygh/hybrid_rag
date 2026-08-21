@@ -74,7 +74,7 @@ Completed in the first slice:
 
 ### Phase 4: Evaluation and Optimization
 
-Status: Sixth slice complete.
+Status: Seventh slice complete.
 
 - Measure context precision, context recall, answer faithfulness, and time-to-first-token.
 - Compare full, truncated, compressed, and cached contexts.
@@ -99,15 +99,29 @@ Completed in the first slice:
 - Added model-free latency benchmarking for full, truncated, compressed, and cached context variants.
 - Reported per-case average latency and token counts plus aggregate variant latency baselines.
 - Added analytics correlation for query, retrieval, and first-token latency by cache status.
+- Persisted first-token and total stream duration fields from the core stream wrapper.
+- Added an `/analytics/latency` endpoint for stage-level latency summaries.
 
 ### Phase 5: Constrained Agent Readiness
 
-Status: Planned after Phases 1-4.
+Status: Fourth slice in progress.
 
 - Define stable retrieval, context, and validation interfaces.
 - Expose narrowly scoped tools such as document search and analytics lookup.
 - Add an agent only for tasks requiring multi-step tool selection.
 - Enforce budgets, allowed tools, source requirements, and failure limits.
+
+Completed in the first slice:
+
+- Added bounded document search, context selection, and response validation tool wrappers.
+- Preserved the existing retrieval, context, and validation implementations behind stable result contracts.
+- Enforced a configurable maximum `top_k` for document search.
+- Added a constrained executor with tool allowlists, required-source checks, and failure limits.
+- Preserved failure counts across calls so repeated tool errors stop further execution.
+- Added per-request call and result-size budgets to the constrained executor.
+- Added a stable structured `ToolExecutionError` contract for tool failures and policy rejections.
+- Added a bounded workflow composing search, context selection, and response validation.
+- Applied required-source checks across both tool outputs and validation inputs.
 
 ## Development Order
 
@@ -118,4 +132,4 @@ Status: Planned after Phases 1-4.
 
 ## Current Slice
 
-The next slice is to connect first-token and stream-duration fields into persisted query analytics. Live model-based faithfulness evaluation remains out of scope for the deterministic CLI.
+Phase 4 implementation is complete for deterministic evaluation and persisted latency observability. Phase 5 next needs an explicit workflow contract for tool sequencing and policy configuration before adding agent orchestration.
