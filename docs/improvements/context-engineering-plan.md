@@ -1,0 +1,111 @@
+# Context Engineering Plan
+
+## Decision
+
+Improve context engineering before introducing an AI agent. The current system already has retrieval, query understanding, memory, reranking, validation, and streaming. Context engineering will make those components produce a reliable, bounded prompt before adding autonomous tool selection.
+
+## Goals
+
+- Build a query-focused, token-bounded context.
+- Preserve useful conversation history without starving document context.
+- Make source selection and truncation observable.
+- Improve answer quality without adding agent planning latency.
+- Establish evaluation signals that an eventual agent can reuse.
+
+## Phases
+
+### Phase 1: Budget-Safe Context Assembly
+
+Status: Phase 1 slice complete.
+
+- Separate document budget from system/query/history overhead.
+- Prevent a configured reserve from consuming a small explicit budget.
+- Preserve the highest-ranked usable documents within the budget.
+- Add regression tests for small budgets, history overhead, and truncation.
+
+Completed in the first slice:
+
+- Capped the system reserve at 25% of small explicit budgets.
+- Preserved the existing context-manager API and document ordering.
+- Added a small-budget regression test.
+- Confirmed the query-flow context-budget regression passes.
+
+### Phase 2: Relevance and Diversity
+
+Status: Fourth slice complete.
+
+- Add explicit relevance-score ordering at the context boundary.
+- Deduplicate repeated chunks from the same source.
+- Apply source and section diversity limits.
+- Record selected and dropped document identifiers.
+
+Completed in the first slice:
+
+- Deduplicated retrieved chunks by stable `doc_id`.
+- Added a `(source, content)` fallback key for generic documents.
+- Preserved first-seen ranking order and distinct chunks from the same source.
+- Added regression tests for object and dictionary document shapes.
+- Added a configurable two-document-per-source default.
+- Preserved distinct sources and added an opt-out with `max_docs_per_source=None`.
+- Added `last_selection_report` with selected documents, dropped documents, reasons, and token usage.
+- Recorded `duplicate`, `source_limit`, `token_budget`, and `context_overhead` exclusion reasons.
+- Ordered candidates by numeric relevance score in descending order with stable ties.
+- Preserved retrieval order when scores are missing or unusable.
+- Recorded the ordering policy in `last_selection_report`.
+
+### Phase 3: Conversation Context
+
+Status: Second slice complete.
+
+- Select relevant prior turns instead of always using the latest fixed window.
+- Summarize older turns when history exceeds its budget.
+- Keep the current user request and recent constraints intact.
+
+Completed in the first slice:
+
+- Added query-aware history selection with lexical term overlap.
+- Preserved the two most recent messages for conversational continuity.
+- Enforced the configured conversation-context word budget.
+- Used the same selected history for multi-turn prompt construction and document budgeting.
+- Added regression tests for relevant older turns, recent turns, and budget limits.
+- Compressed older selected turns into a bounded deterministic summary.
+- Preserved the two most recent messages verbatim when the budget allows.
+- Added regression coverage for summary markers and the history word budget.
+
+### Phase 4: Evaluation and Optimization
+
+Status: Second slice complete.
+
+- Measure context precision, context recall, answer faithfulness, and time-to-first-token.
+- Compare full, truncated, compressed, and cached contexts.
+- Add per-stage latency metrics and representative evaluation queries.
+
+Completed in the first slice:
+
+- Added Prometheus time-to-first-chunk instrumentation for query streaming.
+- Added Prometheus total stream-duration instrumentation.
+- Recorded total duration on successful completion, errors, and disconnects.
+- Added metric registration regression coverage.
+- Added deterministic context-selection evaluation metrics.
+- Measured selected and dropped counts, duplicate-drop rate, source diversity, budget utilization, and ordering policy.
+- Corrected selection-report token usage for truncated documents.
+
+### Phase 5: Constrained Agent Readiness
+
+Status: Planned after Phases 1-4.
+
+- Define stable retrieval, context, and validation interfaces.
+- Expose narrowly scoped tools such as document search and analytics lookup.
+- Add an agent only for tasks requiring multi-step tool selection.
+- Enforce budgets, allowed tools, source requirements, and failure limits.
+
+## Development Order
+
+1. Complete one phase with tests and measurements.
+2. Run the focused tests before starting the next phase.
+3. Update this document with actual results and remaining risks.
+4. Avoid introducing agent behavior until context quality and latency are measurable.
+
+## Current Slice
+
+The next slice is representative evaluation runs: apply the evaluator to the repository's document/query fixtures and persist comparable results without committing generated outputs.

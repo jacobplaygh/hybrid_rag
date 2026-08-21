@@ -354,7 +354,9 @@ class HybridRAG:
                 retrieval_latency.observe(retrieval_time_ms / 1000.0)
             
             # Use the new context manager for token budgeting
-            history = self.memory.get_history(query_id) if hasattr(self.memory, 'get_history') else None
+            history = None
+            if mode == "multi-turn":
+                history = self.memory.get_relevant_context("default_session", query=query)
             context_docs = self.context_manager.truncate_context(
                 context_docs=context_docs,
                 query=query,
@@ -380,7 +382,9 @@ class HybridRAG:
                         response = await self._simple_rag(query, context_text, llm)
                 elif mode == "multi-turn":
                     if stream:
-                        history = self.memory.get_context("default_session")
+                        history = self.memory.get_relevant_context(
+                            "default_session", query=query
+                        )
                         response = self.chains["multi_turn"].astream(
                             query=query,
                             history=history,
@@ -641,7 +645,7 @@ class HybridRAG:
             await self.ensure_keyword_index()
             
             # Get conversation history
-            history = self.memory.get_context(session_id)
+            history = self.memory.get_relevant_context(session_id, query=message)
 
             # Retrieve context
             context_docs, retrieval_id = await self.retriever.retrieve(
@@ -906,7 +910,7 @@ class HybridRAG:
     
     async def _multi_turn_chat(self, query: str, context: str, llm, session_id: str = "default_session") -> str:
         """Multi-turn chat response."""
-        history = self.memory.get_context(session_id)
+        history = self.memory.get_relevant_context(session_id, query=query)
         response = await self.chains["multi_turn"].invoke(
             query=query,
             history=history,

@@ -2,6 +2,8 @@
 
 Welcome to the Hybrid RAG FastAPI Backend documentation. This guide covers setup, architecture, development, and improvements.
 
+For repository boundaries, feature placement, and the development workflow, start with the [Repository Organization Guide](../CONTRIBUTING.md).
+
 ---
 
 ## 📚 Documentation Structure

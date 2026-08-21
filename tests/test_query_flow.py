@@ -172,6 +172,54 @@ def test_multi_turn_chat_uses_session_history():
     assert "ASSISTANT: new answer" in rag.memory.get_context("session-2")
 
 
+def test_memory_selects_relevant_older_turns_and_recent_turns():
+    from rag.memory import ConversationMemory
+
+    memory = ConversationMemory(max_context_tokens=100)
+    memory.add_message("session-3", "user", "We discussed engine performance")
+    memory.add_message("session-3", "assistant", "The engine reaches 90 percent efficiency")
+    memory.add_message("session-3", "user", "Unrelated deployment question")
+    memory.add_message("session-3", "assistant", "The service runs on FastAPI")
+
+    context = memory.get_relevant_context("session-3", query="How is engine efficiency measured?")
+
+    assert "engine performance" in context
+    assert "90 percent efficiency" in context
+    assert "Unrelated deployment question" in context
+    assert "service runs on FastAPI" in context
+
+
+def test_memory_relevant_context_respects_word_budget():
+    from rag.memory import ConversationMemory
+
+    memory = ConversationMemory(max_context_tokens=5)
+    memory.add_message("session-4", "user", "first old message about engines")
+    memory.add_message("session-4", "assistant", "first old answer")
+    memory.add_message("session-4", "user", "latest question")
+
+    context = memory.get_relevant_context("session-4", query="engines")
+
+    assert len(context.split()) <= 5
+    assert "latest question" in context
+
+
+def test_memory_compresses_older_turns_and_preserves_recent_turns():
+    from rag.memory import ConversationMemory
+
+    memory = ConversationMemory(max_context_tokens=16)
+    memory.add_message("session-5", "user", "The engine uses a turbo cooling system")
+    memory.add_message("session-5", "assistant", "The cooling system reduces heat")
+    memory.add_message("session-5", "user", "What is the current status?")
+    memory.add_message("session-5", "assistant", "The current status is stable")
+
+    context = memory.get_relevant_context("session-5", query="engine cooling")
+
+    assert "Earlier conversation summary:" in context
+    assert "USER: What is the current status?" in context
+    assert "ASSISTANT: The current status is stable" in context
+    assert len(context.split()) <= 16
+
+
 def test_query_returns_answer_from_uploaded_documents():
     upload_dir = Path("./uploaded_docs")
     if upload_dir.exists():

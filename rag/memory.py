@@ -1,6 +1,7 @@
 """Conversation memory management."""
 
 import logging
+import re
 from typing import List, Dict, Any, Optional
 from collections import defaultdict
 from datetime import datetime, timezone
@@ -57,6 +58,76 @@ class ConversationMemory:
             for msg in messages[-10:]  # Last 10 messages
         ])
         return context
+
+    def get_relevant_context(
+        self,
+        session_id: str,
+        query: Optional[str] = None,
+        max_messages: int = 10,
+    ) -> str:
+        """Return recent turns plus older turns relevant to the current query."""
+        messages = self.sessions.get(session_id, [])
+        if not messages:
+            return ""
+
+        candidates = messages[-max_messages:]
+        if not query:
+            return self._format_messages(candidates)
+
+        query_terms = self._terms(query)
+        recent_count = min(2, len(candidates))
+        selected_indexes = set(range(len(candidates) - recent_count, len(candidates)))
+
+        scored_indexes = []
+        for index, message in enumerate(candidates):
+            if index in selected_indexes:
+                continue
+            overlap = len(query_terms & self._terms(message.content))
+            if overlap:
+                scored_indexes.append((overlap, index))
+
+        for _, index in sorted(scored_indexes, key=lambda item: (-item[0], -item[1])):
+            selected_indexes.add(index)
+
+        selected = [candidates[index] for index in sorted(selected_indexes)]
+        return self._fit_message_budget(selected)
+
+    def _fit_message_budget(self, messages: List[Message]) -> str:
+        """Keep recent turns verbatim and compress older turns into a summary."""
+        if not messages:
+            return ""
+
+        recent = messages[-2:]
+        older = messages[:-2]
+        recent_lines = [f"{message.role.upper()}: {message.content}" for message in recent]
+        recent_words = sum(len(line.split()) for line in recent_lines)
+        remaining = self.max_context_tokens - recent_words
+
+        if remaining <= 0:
+            newest = recent_lines[-1].split()[: self.max_context_tokens]
+            return " ".join(newest)
+
+        lines = []
+        if older:
+            summary = "Earlier conversation summary: " + " ".join(
+                f"{message.role}: {message.content}" for message in older
+            )
+            summary_words = summary.split()
+            if len(summary_words) > remaining:
+                summary_words = summary_words[:remaining]
+            if summary_words:
+                lines.append(" ".join(summary_words))
+
+        lines.extend(recent_lines)
+        return "\n".join(lines)
+
+    @staticmethod
+    def _terms(text: str) -> set[str]:
+        return set(re.findall(r"[a-z0-9]+", text.lower()))
+
+    @staticmethod
+    def _format_messages(messages: List[Message]) -> str:
+        return "\n".join(f"{msg.role.upper()}: {msg.content}" for msg in messages)
     
     def get_messages(self, session_id: str) -> List[Dict[str, Any]]:
         """Get all messages in session."""

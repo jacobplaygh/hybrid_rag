@@ -3,6 +3,7 @@
 import logging
 import os
 import sys
+import time
 from fastapi import APIRouter, HTTPException, status, BackgroundTasks
 from fastapi.responses import StreamingResponse
 import json
@@ -15,6 +16,7 @@ from rag.confidence_scorer import ConfidenceScorer
 from observability.tracing import get_tracer
 from rag.hybrid_rag import HybridRAG
 from data.vector_store import get_vector_store
+from observability.metrics import stream_duration, stream_first_chunk_latency
 
 try:
     from langchain_nvidia_ai_endpoints import ChatNVIDIA
@@ -145,6 +147,8 @@ async def query_stream(request: QueryRequest):
         generator = await rag.query_stream(request)
         
         async def stream_wrapper():
+            stream_start = time.perf_counter()
+            first_chunk_recorded = False
             try:
                 previous_content = ""
                 async for chunk in generator:
@@ -168,10 +172,17 @@ async def query_stream(request: QueryRequest):
 
                     # Encode content so newlines and SSE delimiters remain part of one event.
                     data = f"data: {json.dumps({'content': content})}\n\n"
+                    if not first_chunk_recorded:
+                        if stream_first_chunk_latency:
+                            stream_first_chunk_latency.observe(time.perf_counter() - stream_start)
+                        first_chunk_recorded = True
                     yield data.encode("utf-8")
             except Exception as e:
                 logger.error(f"Error during stream generation: {e}", exc_info=True)
                 yield f"data: {json.dumps({'error': str(e)})}\n\n".encode("utf-8")
+            finally:
+                if stream_duration:
+                    stream_duration.observe(time.perf_counter() - stream_start)
         
         return StreamingResponse(stream_wrapper(), media_type="text/event-stream")
     
