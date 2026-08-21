@@ -103,6 +103,12 @@ class ConversationMemory:
         recent_words = sum(len(line.split()) for line in recent_lines)
         remaining = self.max_context_tokens - recent_words
 
+        full_lines = [
+            f"{message.role.upper()}: {message.content}" for message in messages
+        ]
+        if sum(len(line.split()) for line in full_lines) <= self.max_context_tokens:
+            return "\n".join(full_lines)
+
         if remaining <= 0:
             newest = recent_lines[-1].split()[: self.max_context_tokens]
             return " ".join(newest)

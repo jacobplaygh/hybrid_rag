@@ -30,7 +30,12 @@ class SemanticCache:
         """Generate embedding for the given text."""
         try:
             # Try common embedding method names
-            for method_name in ["get_embedding", "embed_query", "embed"]:
+            for method_name in [
+                "get_embedding",
+                "get_text_embedding",
+                "embed_query",
+                "embed",
+            ]:
                 method = getattr(self.embedding_model, method_name, None)
                 if callable(method):
                     embedding = method(text)

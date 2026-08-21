@@ -55,7 +55,7 @@ Completed in the first slice:
 
 ### Phase 3: Conversation Context
 
-Status: Second slice complete.
+Status: Fourth slice complete.
 
 - Select relevant prior turns instead of always using the latest fixed window.
 - Summarize older turns when history exceeds its budget.
@@ -74,7 +74,7 @@ Completed in the first slice:
 
 ### Phase 4: Evaluation and Optimization
 
-Status: Second slice complete.
+Status: Third slice complete.
 
 - Measure context precision, context recall, answer faithfulness, and time-to-first-token.
 - Compare full, truncated, compressed, and cached contexts.
@@ -89,6 +89,13 @@ Completed in the first slice:
 - Added deterministic context-selection evaluation metrics.
 - Measured selected and dropped counts, duplicate-drop rate, source diversity, budget utilization, and ordering policy.
 - Corrected selection-report token usage for truncated documents.
+- Added a repeatable JSONL context-evaluation CLI.
+- Added tracked representative cases for duplicate filtering, source diversity, score ordering, and small budgets.
+- Established a baseline run: 1.5 selected documents, 1.0 dropped document, 0.5 duplicate-drop rate, 1.5 source diversity, and 0.43 budget utilization per case on average.
+- Added answer-quality evaluation from expected source coverage and answer-hint coverage.
+- Reported per-case answer-quality scores and an aggregate answer-quality score.
+- Added deterministic answer-faithfulness scoring against selected context terms.
+- Added expected answers to representative cases and included faithfulness in the CLI baseline.
 
 ### Phase 5: Constrained Agent Readiness
 
@@ -108,4 +115,4 @@ Status: Planned after Phases 1-4.
 
 ## Current Slice
 
-The next slice is representative evaluation runs: apply the evaluator to the repository's document/query fixtures and persist comparable results without committing generated outputs.
+The next slice is latency comparison across full, truncated, compressed, and cached contexts. Live model-based faithfulness evaluation remains out of scope for the deterministic CLI.
