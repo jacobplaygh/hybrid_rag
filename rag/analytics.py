@@ -77,6 +77,49 @@ class QueryAnalytics:
             "top_intents": intents.most_common(5)
         }
 
+    def analyze_latency(self) -> Dict[str, Any]:
+        """Summarize request, retrieval, and first-token latency by cache status."""
+        if not self.storage_path.exists():
+            return {"error": "No analytics data available"}
+
+        queries = []
+        with open(self.storage_path, "r", encoding="utf-8") as handle:
+            for line in handle:
+                if line.strip():
+                    queries.append(json.loads(line))
+
+        if not queries:
+            return {"error": "No queries found in logs"}
+
+        def average(records: List[Dict[str, Any]], field: str) -> float:
+            values = [float(record.get(field) or 0) for record in records]
+            return sum(values) / len(values) if values else 0.0
+
+        by_cache = {
+            status: [
+                query for query in queries
+                if query.get("cache_status", "MISS") == status
+            ]
+            for status in ("HIT", "MISS")
+        }
+
+        return {
+            "total_queries": len(queries),
+            "average_query_time_ms": average(queries, "query_time_ms"),
+            "average_response_time_ms": average(queries, "response_time_ms"),
+            "average_retrieval_time_ms": average(queries, "retrieval_time_ms"),
+            "average_first_token_time_ms": average(queries, "first_token_time_ms"),
+            "cache_breakdown": {
+                status: {
+                    "queries": len(records),
+                    "average_query_time_ms": average(records, "query_time_ms"),
+                    "average_retrieval_time_ms": average(records, "retrieval_time_ms"),
+                    "average_first_token_time_ms": average(records, "first_token_time_ms"),
+                }
+                for status, records in by_cache.items()
+            },
+        }
+
     def get_failed_queries(self, limit: int = 10) -> List[Dict[str, Any]]:
         """Retrieve a list of queries that resulted in errors or low confidence."""
         failures = []

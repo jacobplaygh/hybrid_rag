@@ -74,7 +74,7 @@ Completed in the first slice:
 
 ### Phase 4: Evaluation and Optimization
 
-Status: Third slice complete.
+Status: Sixth slice complete.
 
 - Measure context precision, context recall, answer faithfulness, and time-to-first-token.
 - Compare full, truncated, compressed, and cached contexts.
@@ -96,6 +96,9 @@ Completed in the first slice:
 - Reported per-case answer-quality scores and an aggregate answer-quality score.
 - Added deterministic answer-faithfulness scoring against selected context terms.
 - Added expected answers to representative cases and included faithfulness in the CLI baseline.
+- Added model-free latency benchmarking for full, truncated, compressed, and cached context variants.
+- Reported per-case average latency and token counts plus aggregate variant latency baselines.
+- Added analytics correlation for query, retrieval, and first-token latency by cache status.
 
 ### Phase 5: Constrained Agent Readiness
 
@@ -115,4 +118,4 @@ Status: Planned after Phases 1-4.
 
 ## Current Slice
 
-The next slice is latency comparison across full, truncated, compressed, and cached contexts. Live model-based faithfulness evaluation remains out of scope for the deterministic CLI.
+The next slice is to connect first-token and stream-duration fields into persisted query analytics. Live model-based faithfulness evaluation remains out of scope for the deterministic CLI.

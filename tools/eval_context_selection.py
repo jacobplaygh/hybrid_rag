@@ -3,8 +3,9 @@
 import argparse
 import json
 import re
+import time
 from pathlib import Path
-from typing import Any, Dict, Iterable, List
+from typing import Any, Callable, Dict, Iterable, List
 
 from rag.context_evaluation import ContextSelectionEvaluator
 from rag.context_manager import ContextManager
@@ -78,6 +79,37 @@ def check_answer_faithfulness(
     }
 
 
+def benchmark_context_variants(
+    variants: Dict[str, Callable[[], Any]], repeats: int = 3
+) -> Dict[str, Any]:
+    """Measure context variant runtime and token count without model calls."""
+    if repeats < 1:
+        raise ValueError("repeats must be at least 1")
+
+    results = {}
+    for name, variant in variants.items():
+        value = variant()
+        if isinstance(value, str):
+            text = value
+        else:
+            text = " ".join(
+                str(doc.get("content", "")) if isinstance(doc, dict)
+                else str(getattr(doc, "content", ""))
+                for doc in value
+            )
+        start = time.perf_counter_ns()
+        for _ in range(repeats):
+            variant()
+        elapsed_ms = (time.perf_counter_ns() - start) / 1_000_000
+        results[name] = {
+            "repeats": repeats,
+            "elapsed_ms": elapsed_ms,
+            "average_ms": elapsed_ms / repeats,
+            "token_count": ContextManager().estimate_tokens(text),
+        }
+    return results
+
+
 def evaluate_cases(cases: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
     """Evaluate context selection cases and return per-case and aggregate metrics."""
     results: List[Dict[str, Any]] = []
@@ -92,6 +124,23 @@ def evaluate_cases(cases: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
             query=case.get("query"),
             history=case.get("history"),
         )
+        full_text = " ".join(
+            str(doc.get("content", "")) if isinstance(doc, dict)
+            else str(getattr(doc, "content", ""))
+            for doc in case.get("documents", [])
+        )
+        truncated_text = " ".join(
+            str(doc.get("content", "")) if isinstance(doc, dict)
+            else str(getattr(doc, "content", ""))
+            for doc in selected_docs
+        )
+        compressed_text = " ".join(full_text.split()[:max(1, len(full_text.split()) // 2)])
+        latency = benchmark_context_variants({
+            "full": lambda: full_text,
+            "truncated": lambda: truncated_text,
+            "compressed": lambda: compressed_text,
+            "cached": lambda: truncated_text,
+        })
         metrics = ContextSelectionEvaluator.evaluate(manager.last_selection_report)
         source_quality = check_source_coverage(
             manager.last_selection_report,
@@ -123,6 +172,7 @@ def evaluate_cases(cases: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
             "hint_quality": hint_quality,
             "faithfulness": faithfulness,
             "answer_quality": answer_quality,
+            "latency": latency,
             "selection_report": manager.last_selection_report,
         })
 
@@ -162,6 +212,13 @@ def evaluate_cases(cases: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
         if results
         else 0.0
     )
+    for variant in ("full", "truncated", "compressed", "cached"):
+        aggregate[f"{variant}_average_ms"] = (
+            sum(result["latency"][variant]["average_ms"] for result in results)
+            / len(results)
+            if results
+            else 0.0
+        )
     return {"cases": results, "aggregate": aggregate}
 
 

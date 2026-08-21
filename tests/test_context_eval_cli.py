@@ -1,7 +1,11 @@
 import json
 from pathlib import Path
 
-from tools.eval_context_selection import evaluate_cases, load_cases
+from tools.eval_context_selection import (
+    benchmark_context_variants,
+    evaluate_cases,
+    load_cases,
+)
 
 
 def test_context_evaluation_fixture_produces_aggregate_metrics():
@@ -15,6 +19,8 @@ def test_context_evaluation_fixture_produces_aggregate_metrics():
     assert report["cases"][0]["metrics"]["duplicate_drop_rate"] > 0
     assert report["aggregate"]["source_coverage_rate"] >= 0.0
     assert report["aggregate"]["hint_coverage_rate"] >= 0.0
+    for variant in ("full", "truncated", "compressed", "cached"):
+        assert report["aggregate"][f"{variant}_average_ms"] >= 0.0
 
 
 def test_context_evaluation_report_is_json_serializable():
@@ -74,3 +80,18 @@ def test_context_evaluation_reports_answer_faithfulness():
     quality = report["cases"][0]["answer_quality"]
     assert quality["faithfulness_score"] == 1.0
     assert report["aggregate"]["faithfulness_score"] == 1.0
+
+
+def test_context_latency_benchmark_reports_all_variants():
+    report = benchmark_context_variants({
+        "full": lambda: "full context",
+        "truncated": lambda: "short context",
+        "compressed": lambda: "compressed",
+        "cached": lambda: "cached context",
+    }, repeats=2)
+
+    assert set(report) == {"full", "truncated", "compressed", "cached"}
+    for result in report.values():
+        assert result["repeats"] == 2
+        assert result["elapsed_ms"] >= 0
+        assert result["token_count"] > 0
