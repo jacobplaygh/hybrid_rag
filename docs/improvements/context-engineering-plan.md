@@ -104,7 +104,7 @@ Completed in the first slice:
 
 ### Phase 5: Constrained Agent Readiness
 
-Status: Sixth slice complete.
+Status: Seventh slice complete.
 
 - Define stable retrieval, context, and validation interfaces.
 - Expose narrowly scoped tools such as document search and analytics lookup.
@@ -126,6 +126,8 @@ Completed in the first slice:
 - Added a caller-facing workflow service and `/api/query/workflow` endpoint.
 - Created a fresh per-request executor so call and failure budgets do not leak across callers.
 - Preserved structured tool-policy errors at the HTTP boundary.
+- Added a constrained agent coordinator with one explicit `grounded_validation` task.
+- Added a `/api/query/agent` endpoint that rejects unsupported tasks through the structured error contract.
 
 ## Development Order
 
@@ -136,4 +138,4 @@ Completed in the first slice:
 
 ## Current Slice
 
-Phase 4 implementation is complete for deterministic evaluation and persisted latency observability. Phase 5 now has a caller-facing service boundary; the next slice can add narrowly scoped agent orchestration on top of that contract.
+Phase 4 implementation is complete for deterministic evaluation and persisted latency observability. Phase 5 now has a caller-facing service boundary and narrowly scoped orchestration; the next slice can add another explicitly governed task only when its policy and evaluation signals are defined.

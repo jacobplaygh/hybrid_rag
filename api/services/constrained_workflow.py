@@ -9,6 +9,7 @@ from rag.constrained_tools import (
     DocumentSearchTool,
     ResponseValidationTool,
     WorkflowPolicy,
+    ToolExecutionError,
 )
 
 
@@ -44,3 +45,34 @@ class ConstrainedWorkflowService:
             history=history,
             top_k=top_k,
         )
+
+
+class ConstrainedWorkflowAgent:
+    """Select from explicitly supported bounded workflows."""
+
+    GROUNDED_VALIDATION_TASK = "grounded_validation"
+
+    def __init__(self, service: ConstrainedWorkflowService):
+        self.service = service
+
+    @classmethod
+    def from_rag(cls, rag: Any, policy: Optional[WorkflowPolicy] = None) -> "ConstrainedWorkflowAgent":
+        """Build an agent using the existing constrained service boundary."""
+        return cls(ConstrainedWorkflowService.from_rag(rag, policy))
+
+    async def run(
+        self,
+        task: str,
+        query: str,
+        response: str,
+        history: Optional[str] = None,
+        top_k: int = 3,
+    ) -> dict[str, Any]:
+        """Run a supported multi-step task without arbitrary tool selection."""
+        if task != self.GROUNDED_VALIDATION_TASK:
+            raise ToolExecutionError(
+                "unsupported_task",
+                "agent",
+                f"unsupported constrained task: {task}",
+            )
+        return await self.service.run(query, response, history, top_k)

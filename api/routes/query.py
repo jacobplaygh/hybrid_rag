@@ -17,6 +17,7 @@ from api.schemas import (
     ChatResponse,
     RetrievedDocument,
     ConstrainedWorkflowRequest,
+    ConstrainedAgentRequest,
 )
 from rag.quality_metrics import QualityMetricsCalculator
 from rag.confidence_scorer import ConfidenceScorer
@@ -24,7 +25,10 @@ from observability.tracing import get_tracer
 from rag.hybrid_rag import HybridRAG
 from data.vector_store import get_vector_store
 from observability.metrics import stream_duration, stream_first_chunk_latency
-from api.services.constrained_workflow import ConstrainedWorkflowService
+from api.services.constrained_workflow import (
+    ConstrainedWorkflowAgent,
+    ConstrainedWorkflowService,
+)
 from rag.constrained_tools import ToolExecutionError
 
 try:
@@ -93,6 +97,11 @@ def get_rag_system() -> HybridRAG:
 def get_constrained_workflow_service() -> ConstrainedWorkflowService:
     """Create a fresh bounded workflow for one caller request."""
     return ConstrainedWorkflowService.from_rag(get_rag_system())
+
+
+def get_constrained_workflow_agent() -> ConstrainedWorkflowAgent:
+    """Create a fresh constrained agent for one caller request."""
+    return ConstrainedWorkflowAgent.from_rag(get_rag_system())
 
 
 @router.post("/", response_model=QueryResponse, tags=["Query"])
@@ -168,6 +177,28 @@ async def constrained_workflow(request: ConstrainedWorkflowRequest):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=error.as_dict())
     except Exception as error:
         logger.error(f"Constrained workflow endpoint error: {error}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(error),
+        )
+
+
+@router.post("/agent", tags=["Query"])
+async def constrained_agent(request: ConstrainedAgentRequest):
+    """Run an explicitly supported multi-step constrained agent task."""
+    try:
+        agent = get_constrained_workflow_agent()
+        return await agent.run(
+            task=request.task,
+            query=request.query,
+            response=request.response,
+            history=request.history,
+            top_k=request.top_k,
+        )
+    except ToolExecutionError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=error.as_dict())
+    except Exception as error:
+        logger.error(f"Constrained agent endpoint error: {error}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=str(error),

@@ -281,6 +281,28 @@ def test_constrained_workflow_route_returns_structured_policy_error(monkeypatch)
         raise AssertionError("workflow policy errors should be returned as HTTP errors")
 
 
+def test_constrained_agent_route_rejects_unsupported_task(monkeypatch):
+    class Agent:
+        async def run(self, **kwargs):
+            raise ToolExecutionError("unsupported_task", "agent", "unsupported")
+
+    monkeypatch.setattr(query_routes, "get_constrained_workflow_agent", lambda: Agent())
+
+    try:
+        asyncio.run(
+            query_routes.constrained_agent(
+                query_routes.ConstrainedAgentRequest(
+                    task="arbitrary_task", query="question", response="answer"
+                )
+            )
+        )
+    except Exception as error:
+        assert error.status_code == 400
+        assert error.detail["code"] == "unsupported_task"
+    else:
+        raise AssertionError("unsupported agent tasks should be rejected")
+
+
 def test_simple_query_cache_hits_on_repeat():
     upload_dir = Path("./uploaded_docs")
     if upload_dir.exists():

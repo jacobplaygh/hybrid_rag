@@ -10,7 +10,10 @@ from rag.constrained_tools import (
     ToolExecutionError,
     WorkflowPolicy,
 )
-from api.services.constrained_workflow import ConstrainedWorkflowService
+from api.services.constrained_workflow import (
+    ConstrainedWorkflowAgent,
+    ConstrainedWorkflowService,
+)
 
 
 def test_document_search_tool_bounds_top_k():
@@ -193,3 +196,25 @@ def test_service_factory_binds_hybrid_rag_components():
     assert isinstance(tools["search"], DocumentSearchTool)
     assert isinstance(tools["select"], ContextSelectionTool)
     assert isinstance(tools["validate"], ResponseValidationTool)
+
+
+def test_constrained_agent_supports_only_grounded_validation():
+    class Service:
+        async def run(self, query, response, history, top_k):
+            return {"query": query, "response": response, "top_k": top_k}
+
+    agent = ConstrainedWorkflowAgent(Service())
+    result = asyncio.run(agent.run("grounded_validation", "question", "answer", top_k=4))
+
+    assert result == {"query": "question", "response": "answer", "top_k": 4}
+
+    try:
+        asyncio.run(agent.run("arbitrary_task", "question", "answer"))
+    except ToolExecutionError as error:
+        assert error.as_dict() == {
+            "code": "unsupported_task",
+            "tool_name": "agent",
+            "message": "unsupported constrained task: arbitrary_task",
+        }
+    else:
+        raise AssertionError("unsupported tasks should fail")

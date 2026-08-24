@@ -49,6 +49,11 @@ class ConstrainedWorkflowRequest(BaseModel):
     top_k: int = Field(default=3, ge=1, le=10)
 
 
+class ConstrainedAgentRequest(ConstrainedWorkflowRequest):
+    """Request model for an explicitly supported constrained agent task."""
+    task: str = Field(default="grounded_validation", min_length=1, max_length=100)
+
+
 class RetrievedDocument(BaseModel):
     """A retrieved document chunk."""
     content: str
