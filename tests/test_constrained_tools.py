@@ -8,7 +8,9 @@ from rag.constrained_tools import (
     DocumentSearchTool,
     ResponseValidationTool,
     ToolExecutionError,
+    WorkflowPolicy,
 )
+from api.services.constrained_workflow import ConstrainedWorkflowService
 
 
 def test_document_search_tool_bounds_top_k():
@@ -162,3 +164,32 @@ def test_constrained_workflow_composes_search_selection_and_validation():
     assert result["search"]["retrieval_id"] == "rid"
     assert result["selection"]["documents"]
     assert result["validation"]["is_valid"] is True
+
+
+def test_workflow_policy_builds_executor_with_explicit_limits():
+    policy = WorkflowPolicy(
+        allowed_tools=("search",),
+        required_sources=("approved.txt",),
+        max_failures=2,
+        max_calls=4,
+        max_tokens=50,
+    )
+
+    executor = ConstrainedToolExecutor.from_policy({}, policy)
+
+    assert executor.allowed_tools == {"search"}
+    assert executor.required_sources == {"approved.txt"}
+    assert executor.max_failures == 2
+    assert executor.max_calls == 4
+    assert executor.max_tokens == 50
+
+
+def test_service_factory_binds_hybrid_rag_components():
+    rag = SimpleNamespace(retriever=object(), context_manager=object(), validator=object())
+
+    service = ConstrainedWorkflowService.from_rag(rag)
+
+    tools = service.workflow.executor.tools
+    assert isinstance(tools["search"], DocumentSearchTool)
+    assert isinstance(tools["select"], ContextSelectionTool)
+    assert isinstance(tools["validate"], ResponseValidationTool)

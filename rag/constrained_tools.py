@@ -2,7 +2,27 @@
 
 import inspect
 import json
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
+
+
+@dataclass(frozen=True)
+class WorkflowPolicy:
+    """Explicit policy configuration for a constrained workflow."""
+
+    allowed_tools: tuple[str, ...] = ("search", "select", "validate")
+    required_sources: tuple[str, ...] = ()
+    max_failures: int = 3
+    max_calls: int = 10
+    max_tokens: Optional[int] = None
+
+    def __post_init__(self) -> None:
+        if not self.allowed_tools:
+            raise ValueError("allowed_tools must not be empty")
+        if self.max_failures < 1 or self.max_calls < 1:
+            raise ValueError("failure and call budgets must be at least 1")
+        if self.max_tokens is not None and self.max_tokens < 1:
+            raise ValueError("max_tokens must be at least 1")
 
 
 class ToolExecutionError(RuntimeError):
@@ -105,6 +125,20 @@ class ConstrainedToolExecutor:
         self.max_tokens = max_tokens
         self.call_count = 0
         self.failure_count = 0
+
+    @classmethod
+    def from_policy(
+        cls, tools: Dict[str, Any], policy: WorkflowPolicy
+    ) -> "ConstrainedToolExecutor":
+        """Build an executor from one explicit policy object."""
+        return cls(
+            tools,
+            allowed_tools=list(policy.allowed_tools),
+            required_sources=list(policy.required_sources),
+            max_failures=policy.max_failures,
+            max_calls=policy.max_calls,
+            max_tokens=policy.max_tokens,
+        )
 
     async def execute(self, tool_name: str, **kwargs: Any) -> Any:
         if self.failure_count >= self.max_failures:

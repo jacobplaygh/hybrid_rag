@@ -10,13 +10,22 @@ import json
 from datetime import datetime, timezone
 
 from api.config import get_settings
-from api.schemas import QueryRequest, QueryResponse, ChatRequest, ChatResponse, RetrievedDocument
+from api.schemas import (
+    QueryRequest,
+    QueryResponse,
+    ChatRequest,
+    ChatResponse,
+    RetrievedDocument,
+    ConstrainedWorkflowRequest,
+)
 from rag.quality_metrics import QualityMetricsCalculator
 from rag.confidence_scorer import ConfidenceScorer
 from observability.tracing import get_tracer
 from rag.hybrid_rag import HybridRAG
 from data.vector_store import get_vector_store
 from observability.metrics import stream_duration, stream_first_chunk_latency
+from api.services.constrained_workflow import ConstrainedWorkflowService
+from rag.constrained_tools import ToolExecutionError
 
 try:
     from langchain_nvidia_ai_endpoints import ChatNVIDIA
@@ -81,6 +90,11 @@ def get_rag_system() -> HybridRAG:
     return _rag_system
 
 
+def get_constrained_workflow_service() -> ConstrainedWorkflowService:
+    """Create a fresh bounded workflow for one caller request."""
+    return ConstrainedWorkflowService.from_rag(get_rag_system())
+
+
 @router.post("/", response_model=QueryResponse, tags=["Query"])
 async def query(request: QueryRequest):
     """Execute a RAG query."""
@@ -136,6 +150,27 @@ async def query(request: QueryRequest):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=str(e),
+        )
+
+
+@router.post("/workflow", tags=["Query"])
+async def constrained_workflow(request: ConstrainedWorkflowRequest):
+    """Run the bounded workflow used by constrained callers and future agents."""
+    try:
+        service = get_constrained_workflow_service()
+        return await service.run(
+            query=request.query,
+            response=request.response,
+            history=request.history,
+            top_k=request.top_k,
+        )
+    except ToolExecutionError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=error.as_dict())
+    except Exception as error:
+        logger.error(f"Constrained workflow endpoint error: {error}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(error),
         )
 
 

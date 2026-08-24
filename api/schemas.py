@@ -41,6 +41,14 @@ class QueryRequest(BaseModel):
     stream: bool = Field(default=False, description="Stream response chunks")
 
 
+class ConstrainedWorkflowRequest(BaseModel):
+    """Request model for bounded search, context selection, and validation."""
+    query: str = Field(..., min_length=1, max_length=10000)
+    response: str = Field(..., min_length=1, max_length=100000)
+    history: Optional[str] = Field(None, max_length=100000)
+    top_k: int = Field(default=3, ge=1, le=10)
+
+
 class RetrievedDocument(BaseModel):
     """A retrieved document chunk."""
     content: str

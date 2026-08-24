@@ -8,6 +8,9 @@ from fastapi.testclient import TestClient
 from api.main import app
 from rag.hybrid_rag import HybridRAG
 from rag.retrieval import HybridRetriever, RetrievedDoc
+from api.routes import query as query_routes
+from api.schemas import ConstrainedWorkflowRequest
+from rag.constrained_tools import ToolExecutionError
 
 
 def test_build_context_text_truncates_to_token_budget():
@@ -248,6 +251,34 @@ def test_query_returns_answer_from_uploaded_documents():
     assert body["query"] == "What framework does the backend use?"
     assert body["response"].strip() != ""
     assert any(keyword in body["response"] for keyword in ["FastAPI", "backend", "document"])
+
+
+def test_constrained_workflow_route_returns_structured_policy_error(monkeypatch):
+    class FailingService:
+        async def run(self, **kwargs):
+            raise ToolExecutionError("token_limit", "select", "context is too large")
+
+    monkeypatch.setattr(
+        query_routes,
+        "get_constrained_workflow_service",
+        lambda: FailingService(),
+    )
+
+    try:
+        asyncio.run(
+            query_routes.constrained_workflow(
+                ConstrainedWorkflowRequest(query="question", response="answer")
+            )
+        )
+    except Exception as error:
+        assert error.status_code == 400
+        assert error.detail == {
+            "code": "token_limit",
+            "tool_name": "select",
+            "message": "context is too large",
+        }
+    else:
+        raise AssertionError("workflow policy errors should be returned as HTTP errors")
 
 
 def test_simple_query_cache_hits_on_repeat():

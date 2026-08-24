@@ -104,7 +104,7 @@ Completed in the first slice:
 
 ### Phase 5: Constrained Agent Readiness
 
-Status: Fourth slice in progress.
+Status: Sixth slice complete.
 
 - Define stable retrieval, context, and validation interfaces.
 - Expose narrowly scoped tools such as document search and analytics lookup.
@@ -122,6 +122,10 @@ Completed in the first slice:
 - Added a stable structured `ToolExecutionError` contract for tool failures and policy rejections.
 - Added a bounded workflow composing search, context selection, and response validation.
 - Applied required-source checks across both tool outputs and validation inputs.
+- Added a validated `WorkflowPolicy` contract and executor factory for explicit policy configuration.
+- Added a caller-facing workflow service and `/api/query/workflow` endpoint.
+- Created a fresh per-request executor so call and failure budgets do not leak across callers.
+- Preserved structured tool-policy errors at the HTTP boundary.
 
 ## Development Order
 
@@ -132,4 +136,4 @@ Completed in the first slice:
 
 ## Current Slice
 
-Phase 4 implementation is complete for deterministic evaluation and persisted latency observability. Phase 5 next needs an explicit workflow contract for tool sequencing and policy configuration before adding agent orchestration.
+Phase 4 implementation is complete for deterministic evaluation and persisted latency observability. Phase 5 now has a caller-facing service boundary; the next slice can add narrowly scoped agent orchestration on top of that contract.
