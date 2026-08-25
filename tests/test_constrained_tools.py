@@ -2,6 +2,7 @@ import asyncio
 from types import SimpleNamespace
 
 from rag.constrained_tools import (
+    AnalyticsLookupTool,
     ContextSelectionTool,
     ConstrainedToolExecutor,
     ConstrainedToolWorkflow,
@@ -65,6 +66,34 @@ def test_response_validation_tool_returns_stable_contract():
         "issues": ["unsupported claim"],
         "sanitized_response": "revised",
     }
+
+
+def test_analytics_lookup_tool_bounds_failures_and_rejects_unknown_metrics():
+    class Analytics:
+        def analyze_patterns(self):
+            return {"total_queries": 2}
+
+        def analyze_latency(self):
+            return {"average_query_time_ms": 10.0}
+
+        def get_failed_queries(self, limit):
+            return [{"query_id": str(index)} for index in range(limit)]
+
+    tool = AnalyticsLookupTool(Analytics(), max_failures=2)
+
+    assert tool.lookup("summary") == {
+        "metric": "summary",
+        "result": {"total_queries": 2},
+    }
+    assert tool.lookup("latency")["result"]["average_query_time_ms"] == 10.0
+    assert len(tool.lookup("failures", limit=99)["result"]["failures"]) == 2
+
+    try:
+        tool.lookup("raw_logs")
+    except ValueError as error:
+        assert "unsupported analytics metric" in str(error)
+    else:
+        raise AssertionError("unknown analytics metrics should fail")
 
 
 def test_constrained_executor_enforces_allowlist_and_sources():
@@ -188,7 +217,12 @@ def test_workflow_policy_builds_executor_with_explicit_limits():
 
 
 def test_service_factory_binds_hybrid_rag_components():
-    rag = SimpleNamespace(retriever=object(), context_manager=object(), validator=object())
+    rag = SimpleNamespace(
+        retriever=object(),
+        context_manager=object(),
+        validator=object(),
+        analytics=object(),
+    )
 
     service = ConstrainedWorkflowService.from_rag(rag)
 
@@ -196,6 +230,7 @@ def test_service_factory_binds_hybrid_rag_components():
     assert isinstance(tools["search"], DocumentSearchTool)
     assert isinstance(tools["select"], ContextSelectionTool)
     assert isinstance(tools["validate"], ResponseValidationTool)
+    assert isinstance(tools["analytics"], AnalyticsLookupTool)
 
 
 def test_constrained_agent_supports_only_grounded_validation():

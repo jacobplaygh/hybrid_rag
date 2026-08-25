@@ -104,7 +104,7 @@ Completed in the first slice:
 
 ### Phase 5: Constrained Agent Readiness
 
-Status: Seventh slice complete.
+Status: Eighth slice complete.
 
 - Define stable retrieval, context, and validation interfaces.
 - Expose narrowly scoped tools such as document search and analytics lookup.
@@ -128,6 +128,8 @@ Completed in the first slice:
 - Preserved structured tool-policy errors at the HTTP boundary.
 - Added a constrained agent coordinator with one explicit `grounded_validation` task.
 - Added a `/api/query/agent` endpoint that rejects unsupported tasks through the structured error contract.
+- Added a bounded read-only analytics lookup tool for summary, latency, and failure metrics.
+- Bound analytics lookup into the governed service without exposing raw query logs.
 
 ## Development Order
 
@@ -138,4 +140,4 @@ Completed in the first slice:
 
 ## Current Slice
 
-Phase 4 implementation is complete for deterministic evaluation and persisted latency observability. Phase 5 now has a caller-facing service boundary and narrowly scoped orchestration; the next slice can add another explicitly governed task only when its policy and evaluation signals are defined.
+Phase 4 implementation is complete for deterministic evaluation and persisted latency observability. Phase 5 now has a caller-facing service boundary, narrowly scoped orchestration, and governed analytics lookup; the next slice can add an analytics-aware agent task only after its policy and evaluation signals are defined.

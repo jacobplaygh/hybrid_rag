@@ -99,6 +99,30 @@ class ResponseValidationTool:
         }
 
 
+class AnalyticsLookupTool:
+    """Expose bounded, read-only analytics summaries to constrained workflows."""
+
+    SUPPORTED_METRICS = ("summary", "latency", "failures")
+
+    def __init__(self, analytics: Any, max_failures: int = 10):
+        if max_failures < 1:
+            raise ValueError("max_failures must be at least 1")
+        self.analytics = analytics
+        self.max_failures = max_failures
+
+    def lookup(self, metric: str, limit: int = 10) -> Dict[str, Any]:
+        if metric not in self.SUPPORTED_METRICS:
+            raise ValueError(f"unsupported analytics metric: {metric}")
+        if metric == "summary":
+            result = self.analytics.analyze_patterns()
+        elif metric == "latency":
+            result = self.analytics.analyze_latency()
+        else:
+            bounded_limit = min(max(int(limit), 1), self.max_failures)
+            result = {"failures": self.analytics.get_failed_queries(limit=bounded_limit)}
+        return {"metric": metric, "result": result}
+
+
 class ConstrainedToolExecutor:
     """Apply allowlists, source requirements, and failure limits to tool calls."""
 
