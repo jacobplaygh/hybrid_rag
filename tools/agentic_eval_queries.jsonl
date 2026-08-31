@@ -1,0 +1,15 @@
+{"query": "What is the FastAPI backend setup and environment configuration?", "category": "setup", "expected": ["fastapi", "environment", "configuration"]}
+{"query": "Describe the hybrid RAG architecture and the main system components.", "category": "architecture", "expected": ["hybrid", "retrieval", "vector", "keyword", "reranker"]}
+{"query": "How is the LlamaIndex integration used for document indexing and retrieval?", "category": "indexing", "expected": ["llamaindex", "indexing", "documents", "vector store"]}
+{"query": "Explain the hybrid retrieval strategy that combines BM25 and semantic search.", "category": "retrieval", "expected": ["bm25", "semantic", "hybrid", "alpha"]}
+{"query": "What observability layers are in place, including metrics and tracing?", "category": "observability", "expected": ["prometheus", "langsmith", "metrics", "tracing"]}
+{"query": "How does the system maintain conversation memory and relevant context across turns?", "category": "memory", "expected": ["memory", "history", "context", "conversation"]}
+{"query": "What is the purpose of the vector store abstraction in the data layer?", "category": "data-layer", "expected": ["vector store", "embeddings", "documents", "storage"]}
+{"query": "Which request and response schemas are used by the FastAPI query endpoints?", "category": "api", "expected": ["schemas", "api", "query", "response"]}
+{"query": "How does the system decide when to use constrained workflows and policy enforcement?", "category": "policies", "expected": ["policy", "constrained", "workflow", "validation"]}
+{"query": "What is the process for adding and indexing new documents through the API?", "category": "ingestion", "expected": ["upload", "document", "index", "api"]}
+{"query": "How does the system validate response quality and detect hallucinations?", "category": "validation", "expected": ["validation", "grounded", "hallucination", "quality"]}
+{"query": "Compare the retrieval strategy used before and after re-ranking.", "category": "reranking", "expected": ["rerank", "retrieval", "precision", "scoring"]}
+{"query": "How is the semantic cache implemented to optimize repeated queries?", "category": "cache", "expected": ["semantic cache", "latency", "cache", "embedding"]}
+{"query": "What metrics are tracked by the monitoring stack in this system?", "category": "metrics", "expected": ["prometheus", "latency", "tokens", "cache"]}
+{"query": "Describe the end-to-end flow of a query from the API through final response generation.", "category": "pipeline", "expected": ["query", "api", "retrieval", "response"]}

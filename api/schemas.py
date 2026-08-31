@@ -71,6 +71,17 @@ class SourceAttribution(BaseModel):
     method: str  # "semantic", "keyword", or "hybrid"
 
 
+class AgenticLoopMetadata(BaseModel):
+    """Metadata about the agentic retrieval loop."""
+    enabled: bool = False
+    status: Optional[str] = None
+    confidence: Optional[float] = None
+    iterations: int = 0
+    queries_tried: List[str] = Field(default_factory=list)
+    reformulation_reasons: List[str] = Field(default_factory=list)
+    missing_aspects: List[str] = Field(default_factory=list)
+
+
 class QueryResponse(BaseModel):
     """Response model for RAG query."""
     query_id: str
@@ -85,6 +96,7 @@ class QueryResponse(BaseModel):
     timestamp: datetime
     confidence_score: Optional[ConfidenceScore] = None
     quality_metrics: Optional[QualityMetrics] = None
+    agentic_loop: Optional[AgenticLoopMetadata] = None
 
 
 class ChatMessage(BaseModel):

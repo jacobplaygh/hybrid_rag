@@ -18,6 +18,7 @@ from api.schemas import (
     RetrievedDocument,
     ConstrainedWorkflowRequest,
     ConstrainedAgentRequest,
+    AgenticLoopMetadata,
 )
 from rag.quality_metrics import QualityMetricsCalculator
 from rag.confidence_scorer import ConfidenceScorer
@@ -129,6 +130,19 @@ async def query(request: QueryRequest):
         scorer = ConfidenceScorer()
         confidence = scorer.score_response(docs, result["response"])
         
+        agentic_loop = None
+        if result.get("agentic_loop"):
+            agentic_payload = result["agentic_loop"]
+            agentic_loop = AgenticLoopMetadata(
+                enabled=bool(agentic_payload.get("enabled", True)),
+                status=agentic_payload.get("status"),
+                confidence=agentic_payload.get("confidence"),
+                iterations=agentic_payload.get("iterations", 0),
+                queries_tried=agentic_payload.get("queries_tried", []),
+                reformulation_reasons=agentic_payload.get("reformulation_reasons", []),
+                missing_aspects=agentic_payload.get("missing_aspects", []),
+            )
+
         # Convert to response format
         return QueryResponse(
             query_id=result["query_id"],
@@ -150,6 +164,7 @@ async def query(request: QueryRequest):
             timestamp=datetime.fromisoformat(result["timestamp"]),
             confidence_score=confidence,
             quality_metrics=quality,
+            agentic_loop=agentic_loop,
         )
     
     except HTTPException:

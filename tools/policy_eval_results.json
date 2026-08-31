@@ -1,0 +1,68 @@
+[
+  {
+    "query": "What is the FastAPI backend setup and environment configuration?",
+    "policy_name": "strict",
+    "response": "",
+    "latency": 0.0022055000299587846,
+    "tokens_used": 0,
+    "tool_calls": 0,
+    "is_valid": false,
+    "score": 0.0,
+    "error": "cannot access local variable 'settings' where it is not associated with a value"
+  },
+  {
+    "query": "Describe the hybrid RAG architecture and components.",
+    "policy_name": "strict",
+    "response": "",
+    "latency": 0.0006075000273995101,
+    "tokens_used": 0,
+    "tool_calls": 0,
+    "is_valid": false,
+    "score": 0.0,
+    "error": "cannot access local variable 'settings' where it is not associated with a value"
+  },
+  {
+    "query": "What is the FastAPI backend setup and environment configuration?",
+    "policy_name": "balanced",
+    "response": "",
+    "latency": 0.0005736000020988286,
+    "tokens_used": 0,
+    "tool_calls": 0,
+    "is_valid": false,
+    "score": 0.0,
+    "error": "cannot access local variable 'settings' where it is not associated with a value"
+  },
+  {
+    "query": "Describe the hybrid RAG architecture and components.",
+    "policy_name": "balanced",
+    "response": "",
+    "latency": 0.00035550002939999104,
+    "tokens_used": 0,
+    "tool_calls": 0,
+    "is_valid": false,
+    "score": 0.0,
+    "error": "cannot access local variable 'settings' where it is not associated with a value"
+  },
+  {
+    "query": "What is the FastAPI backend setup and environment configuration?",
+    "policy_name": "generous",
+    "response": "",
+    "latency": 0.0003787999739870429,
+    "tokens_used": 0,
+    "tool_calls": 0,
+    "is_valid": false,
+    "score": 0.0,
+    "error": "cannot access local variable 'settings' where it is not associated with a value"
+  },
+  {
+    "query": "Describe the hybrid RAG architecture and components.",
+    "policy_name": "generous",
+    "response": "",
+    "latency": 0.00035960000241175294,
+    "tokens_used": 0,
+    "tool_calls": 0,
+    "is_valid": false,
+    "score": 0.0,
+    "error": "cannot access local variable 'settings' where it is not associated with a value"
+  }
+]

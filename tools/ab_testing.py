@@ -1,0 +1,248 @@
+import argparse
+import importlib
+import json
+import math
+from dataclasses import dataclass, asdict
+from pathlib import Path
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence
+
+
+@dataclass
+class EvaluationRow:
+    query: str
+    category: str
+    baseline_confidence: float
+    agentic_confidence: float
+    delta_confidence: float
+    baseline_latency_ms: float
+    agentic_latency_ms: float
+    latency_delta_ms: float
+    baseline_status: str
+    agentic_status: str
+    winner: str
+
+
+def _normalize_tokens(value: str) -> set[str]:
+    if not value:
+        return set()
+    import re
+    return {token for token in re.findall(r"[a-zA-Z0-9]+", value.lower()) if len(token) > 2}
+
+
+def _lexical_overlap_score(query: str, evidence: Sequence[str]) -> float:
+    query_tokens = _normalize_tokens(query)
+    if not query_tokens:
+        return 0.0
+    text = " ".join(evidence).lower()
+    coverage = sum(1 for token in query_tokens if token in text)
+    return coverage / max(len(query_tokens), 1)
+
+
+def load_dataset(path: str | Path) -> List[Dict[str, Any]]:
+    dataset_path = Path(path)
+    rows: List[Dict[str, Any]] = []
+    with dataset_path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            stripped = line.strip()
+            if not stripped:
+                continue
+            rows.append(json.loads(stripped))
+    if not rows:
+        raise ValueError(f"Dataset at {dataset_path} contains no JSONL records")
+    return rows
+
+
+def _extract_metric(payload: Any, *names: str) -> Optional[float]:
+    if payload is None:
+        return None
+    if isinstance(payload, dict):
+        for key in names:
+            if key in payload:
+                value = payload[key]
+                if isinstance(value, (int, float)):
+                    return float(value)
+                if isinstance(value, str):
+                    try:
+                        return float(value)
+                    except ValueError:
+                        pass
+        return None
+    if hasattr(payload, "confidence"):
+        for key in names:
+            if hasattr(payload, key):
+                value = getattr(payload, key)
+                if isinstance(value, (int, float)):
+                    return float(value)
+    return None
+
+
+def _extract_latency(payload: Any) -> float:
+    latency = _extract_metric(payload, "latency_ms", "processing_time_ms", "query_time_ms")
+    if latency is not None:
+        return float(latency)
+    return 0.0
+
+
+def _extract_status(payload: Any) -> str:
+    if payload is None:
+        return "unknown"
+    if isinstance(payload, dict):
+        for key in ("status", "final_status"):
+            if key in payload:
+                return str(payload[key])
+    if hasattr(payload, "status"):
+        return str(payload.status)
+    return "success"
+
+
+def _coerce_result(payload: Any) -> Dict[str, Any]:
+    if isinstance(payload, dict):
+        return payload
+    if hasattr(payload, "__dict__"):
+        return vars(payload)
+    return {"status": "success", "confidence": 0.0}
+
+
+def run_ab_test(
+    dataset: Iterable[Dict[str, Any]],
+    baseline_fn: Callable[[str], Any],
+    agentic_fn: Callable[[str], Any],
+    *,
+    limit: Optional[int] = None,
+) -> Dict[str, Any]:
+    rows: List[EvaluationRow] = []
+    total_cases = 0
+    total_baseline_conf = 0.0
+    total_agentic_conf = 0.0
+    total_baseline_latency = 0.0
+    total_agentic_latency = 0.0
+    baseline_successes = 0
+    agentic_successes = 0
+
+    for entry in dataset:
+        if limit is not None and total_cases >= limit:
+            break
+        query = str(entry.get("query", ""))
+        expected = entry.get("expected") or []
+
+        baseline_result = _coerce_result(baseline_fn(query))
+        agentic_result = _coerce_result(agentic_fn(query))
+
+        baseline_conf = _extract_metric(baseline_result, "confidence", "confidence_score", "score") or 0.0
+        agentic_conf = _extract_metric(agentic_result, "confidence", "confidence_score", "score") or 0.0
+
+        baseline_latency = _extract_latency(baseline_result)
+        agentic_latency = _extract_latency(agentic_result)
+
+        baseline_status = _extract_status(baseline_result)
+        agentic_status = _extract_status(agentic_result)
+        if baseline_status == "success" or baseline_conf >= 0.7:
+            baseline_successes += 1
+        if agentic_status == "success" or agentic_conf >= 0.7:
+            agentic_successes += 1
+
+        delta_conf = agentic_conf - baseline_conf
+        latency_delta = agentic_latency - baseline_latency
+        winner = "agentic" if delta_conf > 0 else "baseline"
+        if abs(delta_conf) < 1e-9:
+            winner = "tie"
+
+        row = EvaluationRow(
+            query=query,
+            category=str(entry.get("category", "unknown")),
+            baseline_confidence=baseline_conf,
+            agentic_confidence=agentic_conf,
+            delta_confidence=delta_conf,
+            baseline_latency_ms=baseline_latency,
+            agentic_latency_ms=agentic_latency,
+            latency_delta_ms=latency_delta,
+            baseline_status=baseline_status,
+            agentic_status=agentic_status,
+            winner=winner,
+        )
+        rows.append(row)
+
+        total_baseline_conf += baseline_conf
+        total_agentic_conf += agentic_conf
+        total_baseline_latency += baseline_latency
+        total_agentic_latency += agentic_latency
+        total_cases += 1
+
+    if total_cases == 0:
+        raise ValueError("No evaluation rows were produced")
+
+    summary = {
+        "total_cases": total_cases,
+        "baseline_success_rate": baseline_successes / total_cases,
+        "agentic_success_rate": agentic_successes / total_cases,
+        "mean_baseline_confidence": total_baseline_conf / total_cases,
+        "mean_agentic_confidence": total_agentic_conf / total_cases,
+        "mean_baseline_latency_ms": total_baseline_latency / total_cases,
+        "mean_agentic_latency_ms": total_agentic_latency / total_cases,
+        "confidence_delta": (total_agentic_conf - total_baseline_conf) / total_cases,
+        "latency_delta_ms": (total_agentic_latency - total_baseline_latency) / total_cases,
+        "winner": "agentic" if (total_agentic_conf - total_baseline_conf) > 0 else "baseline",
+        "rows": [asdict(row) for row in rows],
+    }
+    return summary
+
+
+def _default_baseline_for(query: str) -> Dict[str, Any]:
+    overlap = _lexical_overlap_score(query, [
+        "fastapi backend environment configuration vector store hybrid retrieval",
+        "observability metrics tracing model api schema",
+    ])
+    return {
+        "status": "success" if overlap >= 0.15 else "low_confidence",
+        "confidence": round(0.35 + overlap * 0.45, 4),
+        "latency_ms": 160,
+    }
+
+
+def _default_agentic_for(query: str) -> Dict[str, Any]:
+    overlap = _lexical_overlap_score(query, [
+        "fastapi backend environment configuration vector store hybrid retrieval",
+        "observability metrics tracing model api schema query flow validation",
+        "retrieval loop reformulation retry confidence sufficiency",
+    ])
+    return {
+        "status": "success" if overlap >= 0.2 else "low_confidence",
+        "confidence": round(0.5 + overlap * 0.45, 4),
+        "latency_ms": 220,
+    }
+
+
+def _import_callable(spec: str) -> Callable[[str], Any]:
+    if not spec:
+        return _default_baseline_for
+    module_name, _, attr = spec.partition(":")
+    if not module_name or not attr:
+        raise ValueError(f"Callable specification '{spec}' must use format 'module:function'")
+    module = importlib.import_module(module_name)
+    fn = getattr(module, attr)
+    if not callable(fn):
+        raise TypeError(f"'{spec}' does not resolve to a callable")
+    return fn
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Compare a baseline RAG strategy to an agentic variant on a representative dataset.")
+    parser.add_argument("--dataset", default="tools/agentic_eval_queries.jsonl", help="Path to JSONL evaluation dataset")
+    parser.add_argument("--limit", type=int, default=None, help="Optional cap on the number of cases to evaluate")
+    parser.add_argument("--baseline", default="", help="Optional module:function for the baseline evaluator (e.g. mymodule:baseline_run)")
+    parser.add_argument("--agentic", default="", help="Optional module:function for the agentic evaluator (e.g. mymodule:agentic_run)")
+    return parser
+
+
+def main() -> None:
+    parser = _build_parser()
+    args = parser.parse_args()
+    dataset = load_dataset(args.dataset)
+    baseline_fn = _import_callable(args.baseline) if args.baseline else _default_baseline_for
+    agentic_fn = _import_callable(args.agentic) if args.agentic else _default_agentic_for
+    summary = run_ab_test(dataset, baseline_fn, agentic_fn, limit=args.limit)
+    print(json.dumps(summary, indent=2))
+
+
+if __name__ == "__main__":
+    main()

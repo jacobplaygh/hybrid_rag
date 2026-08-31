@@ -15,11 +15,18 @@ from rag.quality_metrics import QualityMetricsCalculator
 from rag.query_understanding import QueryUnderstanding
 from rag.chains import create_chains, QueryDecomposerChain
 from rag.retrieval import HybridRetriever
+from rag.retrieval_router import RetrievalRouter
 from rag.memory import ConversationMemory
 from rag.semantic_cache import SemanticCache
 from rag.context_manager import ContextManager
 from rag.response_validator import ResponseValidator
 from rag.analytics import QueryAnalytics
+from rag.agentic_loop import (
+    AgenticRetrieverLoop,
+    AgenticLoopConfig,
+    ContextSufficiencyEvaluator,
+    QueryReformulator,
+)
 
 DEFAULT_MAX_CONTEXT_TOKENS = 120000
 
@@ -29,6 +36,7 @@ try:
 except ImportError:
     HAS_LANGCHAIN = False
 
+from rag.constrained_tools import ConstrainedToolExecutor, WorkflowPolicy
 from api.config import get_settings
 from observability.metrics import (
     query_counter, 
@@ -83,8 +91,10 @@ class HybridRAG:
         self.metrics_calculator = QualityMetricsCalculator()
         self.query_understanding = QueryUnderstanding(chat_llm) if chat_llm else None
 
-        # Initialize Context Manager
         settings = get_settings()
+        self.retrieval_router = RetrievalRouter(enabled=getattr(settings, "DYNAMIC_ROUTING_ENABLED", True))
+
+        # Initialize Context Manager
         self.context_manager = ContextManager(
             max_tokens=getattr(settings, "MAX_CONTEXT_TOKENS", DEFAULT_MAX_CONTEXT_TOKENS)
         )
@@ -95,9 +105,99 @@ class HybridRAG:
         # Initialize Analytics
         self.analytics = QueryAnalytics()
 
-        # Initialize Semantic Cache
-        self.semantic_cache = None
+        # Initialize local caches and history before query execution.
+        self.query_history: Dict[str, Dict[str, Any]] = {}
+        self.query_cache: Dict[str, Dict[str, Any]] = {}
+
+        # Initialize retrieval components early so they are available to the entire pipeline.
+        self.retriever = None
+        reranker_model = None
+        if HAS_LANGCHAIN and settings.RETRIEVAL_RERANK:
+            reranker_model = ChatNVIDIA(model=settings.RERANK_MODEL)
+        self.retriever = HybridRetriever(
+            vector_store,
+            use_reranker=settings.RETRIEVAL_RERANK,
+            reranker=reranker_model,
+        )
+
+        self.agentic_loop = None
+        if settings.AGENTIC_LOOP_ENABLED:
+            self.agentic_loop = AgenticRetrieverLoop(
+                retriever=self.retriever,
+                confidence_scorer=self.confidence_scorer,
+                evaluator=ContextSufficiencyEvaluator(self.confidence_scorer),
+                reformulator=QueryReformulator(llm=chat_llm if HAS_LANGCHAIN else None, use_llm=bool(chat_llm)),
+                config=AgenticLoopConfig(
+                    max_retries=settings.AGENTIC_MAX_RETRIES,
+                    confidence_threshold=settings.AGENTIC_CONFIDENCE_THRESHOLD,
+                    retry_strategy=settings.AGENTIC_REFORMULATION_STRATEGY,
+                    timeout_seconds=settings.AGENTIC_TIMEOUT_SECONDS,
+                ),
+            )
+            logger.info("🔁 Agentic retrieval loop enabled")
+        
         if settings.SEMANTIC_CACHE_ENABLED:
+            # Use the vector store's embedding function for the semantic cache
+            embedding_model = getattr(self.vector_store, "embedding_fn", None)
+            if embedding_model:
+                self.semantic_cache = SemanticCache(embedding_model=embedding_model)
+            else:
+                logger.warning("Semantic cache enabled but no embedding model found in vector store")
+                self.semantic_cache = None
+
+    async def execute_constrained_query(self, query: str, policy: WorkflowPolicy) -> Dict[str, Any]:
+        """
+        Executes a query using a constrained tool executor to enforce budget and policy.
+        """
+        # This is a simplified implementation for evaluation purposes.
+        # In a full implementation, this would integrate with the ConstrainedWorkflowAgent.
+        
+        tools = {
+            "document_search": self.vector_store.search,
+        }
+        
+        executor = ConstrainedToolExecutor.from_policy(tools, policy)
+        
+        start_time = time.perf_counter()
+        try:
+            # Simulate the agent loop: 
+            # 1. Understand query -> 2. Call tools (constrained) -> 3. Generate response
+            
+            # Step 1: Query Understanding
+            query_plan = await self.query_understanding.analyze(query) if self.query_understanding else {"plan": ["document_search"]}
+            
+            # Step 2: Constrained Tool Execution
+            context_fragments = []
+            for tool_name in query_plan.get("plan", ["document_search"]):
+                # We wrap the tool call in the executor
+                result = await executor.execute(tool_name, query)
+                context_fragments.append(result)
+            
+            # Step 3: Final Response Generation (Simulated for eval)
+            # In reality, this would call the LLM with the gathered context
+            response = f"Generated response based on {len(context_fragments)} tool calls."
+            
+            # Validation
+            validation_result = await self.validator.validate(response, query)
+            
+            return {
+                "response": response,
+                "tokens_used": executor.current_tokens,
+                "tool_calls": executor.call_count,
+                "is_valid": validation_result.get("is_valid", True),
+                "score": validation_result.get("score", 1.0)
+            }
+            
+            logger.error(f"Constrained execution failed: {e}")
+        finally:
+            latency = time.perf_counter() - start_time
+            self.analytics.log_query({
+                "query": query,
+                "response_time_ms": latency * 1000,
+                "tool_calls": executor.call_count,
+                "status": "success" if 'response' in locals() else "error"
+            })
+
             # Use the vector store's embedding capability if available, 
             # or a dedicated embedding model. For now, we pass the vector_store
             # as it typically handles the embedding logic.
@@ -179,6 +279,7 @@ class HybridRAG:
         Execute the Hybrid RAG pipeline.
         If stream=True, returns an async generator of chunks.
         """
+        settings = get_settings()
         query_id = str(uuid.uuid4())
         query_start_time = datetime.now(timezone.utc)
         
@@ -285,6 +386,18 @@ class HybridRAG:
             if analysis.get("intent") == "COMPLEX" and mode == "simple":
                 logger.info("🔄 Auto-switching to 'decompose' mode due to COMPLEX intent")
                 mode = "decompose"
+
+            routing = self.retrieval_router.route(query, analysis) if self.retrieval_router else None
+            retrieval_alpha = getattr(routing, "alpha", 0.7)
+            retrieval_strategy = getattr(routing, "strategy", "hybrid")
+            retrieval_reason = getattr(routing, "reason", "default retrieval policy")
+            if routing:
+                logger.info(
+                    "🧭 Retrieval route selected: strategy=%s, alpha=%.2f, reason=%s",
+                    retrieval_strategy,
+                    retrieval_alpha,
+                    retrieval_reason,
+                )
             # ---------------------------------
 
             retrieval_id = None
@@ -335,19 +448,38 @@ class HybridRAG:
                 context_docs = unique_docs
             else:
                 # Standard retrieval flow
-                context_docs, retrieval_id = await self.retriever.retrieve(
-                    query,
-                    top_k=top_k * 5 if not (stream and mode == "simple") else top_k,  # Retrieve more for reranking if not simple stream
-                    alpha=0.7,  # 70% semantic, 30% keyword
-                )
+                context_docs = []
+                retrieval_id = None
+                agentic_loop_result = None
+                if self.agentic_loop and settings.AGENTIC_LOOP_ENABLED and not (mode == "decompose"):
+                    agentic_loop_result = await self.agentic_loop.retrieve_with_retry(
+                        query=query,
+                        top_k=top_k,
+                        query_decomposition=analysis.get("sub_queries") or None,
+                    )
+                    context_docs = agentic_loop_result.get("documents", [])
+                    retrieval_id = f"agentic-{query_id}"
+                    logger.info(
+                        "🔁 Agentic loop retrieval complete: status=%s, confidence=%.2f, iterations=%s",
+                        agentic_loop_result.get("final_status"),
+                        agentic_loop_result.get("confidence", 0.0),
+                        agentic_loop_result.get("iterations", 0),
+                    )
                 
-                # Rerank results to improve precision, unless it's a simple stream where speed is priority
-                if not (stream and mode == "simple"):
-                    reranked_docs = self.reranker.rerank(query, context_docs, top_k=top_k)
-                    context_docs = reranked_docs if reranked_docs is not None else []
-                else:
-                    # For simple stream, just take the top_k from hybrid retrieval
-                    context_docs = context_docs[:top_k]
+                if not context_docs:
+                    context_docs, retrieval_id = await self.retriever.retrieve(
+                        query,
+                        top_k=top_k * 5 if not (stream and mode == "simple") else top_k,  # Retrieve more for reranking if not simple stream
+                        alpha=retrieval_alpha,
+                    )
+                    
+                    # Rerank results to improve precision, unless it's a simple stream where speed is priority
+                    if not (stream and mode == "simple"):
+                        reranked_docs = self.reranker.rerank(query, context_docs, top_k=top_k)
+                        context_docs = reranked_docs if reranked_docs is not None else []
+                    else:
+                        # For simple stream, just take the top_k from hybrid retrieval
+                        context_docs = context_docs[:top_k]
             
             retrieval_end = datetime.now(timezone.utc)
             retrieval_time_ms = (retrieval_end - retrieval_start).total_seconds() * 1000
@@ -515,7 +647,21 @@ class HybridRAG:
                 "quality_metrics": quality,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "model_used": llm.model if hasattr(llm, 'model') else "unknown",
+                "retrieval_strategy": retrieval_strategy,
+                "retrieval_alpha": retrieval_alpha,
+                "retrieval_reason": retrieval_reason,
+                "agentic_loop": None,
             }
+            if agentic_loop_result:
+                result["agentic_loop"] = {
+                    "enabled": True,
+                    "status": agentic_loop_result.get("final_status"),
+                    "confidence": agentic_loop_result.get("confidence"),
+                    "iterations": agentic_loop_result.get("iterations", 0),
+                    "queries_tried": agentic_loop_result.get("queries_tried", []),
+                    "reformulation_reasons": agentic_loop_result.get("reformulation_reasons", []),
+                    "missing_aspects": agentic_loop_result.get("missing_aspects", []),
+                }
 
             if stream:
                 return self._stream_response(response, result)

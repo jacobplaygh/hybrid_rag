@@ -82,12 +82,16 @@ HTML_PAGE = """
         <button id="healthButton">Check Health</button>
       </div>
       <div class="full">
-        <h2>Response</h2>
-        <pre id="responseArea">Ready.</pre>
+       <h2>Agentic Loop Status</h2>
+       <pre id="agenticMetadata">No agentic-loop metadata yet.</pre>
       </div>
-    </div>
+     <div class="full">
+       <h2>Response</h2>
+       <pre id="responseArea">Ready.</pre>
+     </div>
+   </div>
   </div>
-
+ 
   <script>
     const apiKeyInput = document.getElementById('apiKey');
     const queryText = document.getElementById('queryText');
@@ -96,6 +100,7 @@ HTML_PAGE = """
     const modelInput = document.getElementById('model');
     const streamToggle = document.getElementById('streamToggle');
     const responseArea = document.getElementById('responseArea');
+    const agenticMetadata = document.getElementById('agenticMetadata');
     const uploadFile = document.getElementById('uploadFile');
 
     function buildHeaders() {
@@ -107,8 +112,29 @@ HTML_PAGE = """
       return headers;
     }
 
+    function renderAgenticLoop(metadata) {
+      if (!metadata || !metadata.agentic_loop) {
+        agenticMetadata.textContent = 'No agentic-loop metadata yet.';
+        return;
+      }
+
+      const loop = metadata.agentic_loop;
+      const details = [
+        `Enabled: ${loop.enabled ? 'yes' : 'no'}`,
+        `Status: ${loop.status || 'unknown'}`,
+        `Iterations: ${loop.iterations ?? 0}`,
+        `Confidence: ${loop.confidence !== null && loop.confidence !== undefined ? Number(loop.confidence).toFixed(3) : 'n/a'}`,
+        `Queries tried: ${Array.isArray(loop.queries_tried) && loop.queries_tried.length ? loop.queries_tried.join(' -> ') : 'none'}`,
+        `Reformulation reasons: ${Array.isArray(loop.reformulation_reasons) && loop.reformulation_reasons.length ? loop.reformulation_reasons.join('; ') : 'none'}`,
+        `Missing aspects: ${Array.isArray(loop.missing_aspects) && loop.missing_aspects.length ? loop.missing_aspects.join('; ') : 'none'}`
+      ];
+      agenticMetadata.textContent = details.join('\n');
+    }
+
     async function renderResult(result) {
-      responseArea.textContent = JSON.stringify(result, null, 2);
+      const payload = result && result.body ? result.body : result;
+      renderAgenticLoop(payload);
+      responseArea.textContent = JSON.stringify(payload, null, 2);
     }
 
     function appendStreamContent(content) {

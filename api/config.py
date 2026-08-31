@@ -67,6 +67,7 @@ class Settings(BaseSettings):
     # Retrieval
     RETRIEVAL_K: int = int(os.getenv("RETRIEVAL_K", 10))
     RETRIEVAL_RERANK: bool = os.getenv("RETRIEVAL_RERANK", "True").lower() == "true"
+    DYNAMIC_ROUTING_ENABLED: bool = os.getenv("DYNAMIC_ROUTING_ENABLED", "True").lower() == "true"
     
     # LangSmith (Observability)
     LANGSMITH_SMITH_API_URL: str = os.getenv("LANGSMITH_API_URL", "https://apac.api.smith.langchain.com")
@@ -77,6 +78,13 @@ class Settings(BaseSettings):
     # Semantic Cache
     SEMANTIC_CACHE_ENABLED: bool = os.getenv("SEMANTIC_CACHE_ENABLED", "True").lower() == "true"
     SEMANTIC_CACHE_THRESHOLD: float = float(os.getenv("SEMANTIC_CACHE_THRESHOLD", "0.9"))
+
+    # Agentic Loop
+    AGENTIC_LOOP_ENABLED: bool = os.getenv("AGENTIC_LOOP_ENABLED", "True").lower() == "true"
+    AGENTIC_MAX_RETRIES: int = int(os.getenv("AGENTIC_MAX_RETRIES", 2))
+    AGENTIC_CONFIDENCE_THRESHOLD: float = float(os.getenv("AGENTIC_CONFIDENCE_THRESHOLD", "0.7"))
+    AGENTIC_REFORMULATION_STRATEGY: str = os.getenv("AGENTIC_REFORMULATION_STRATEGY", "auto")
+    AGENTIC_TIMEOUT_SECONDS: int = int(os.getenv("AGENTIC_TIMEOUT_SECONDS", 30))
     
     # Auth & Security
     AUTH_REQUIRED: bool = os.getenv("AUTH_REQUIRED", "False").lower() == "true"

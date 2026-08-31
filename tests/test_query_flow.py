@@ -8,9 +8,28 @@ from fastapi.testclient import TestClient
 from api.main import app
 from rag.hybrid_rag import HybridRAG
 from rag.retrieval import HybridRetriever, RetrievedDoc
+from rag.retrieval_router import RetrievalRouter
 from api.routes import query as query_routes
 from api.schemas import ConstrainedWorkflowRequest
 from rag.constrained_tools import ToolExecutionError
+
+
+def test_dynamic_routing_selects_keyword_strategy_for_identifier_queries():
+    router = RetrievalRouter(enabled=True)
+
+    route = router.route("Find part number A-100 and the configuration guide", {"intent": "FACTUAL", "entities": ["A-100"]})
+
+    assert route.strategy == "keyword"
+    assert route.alpha == 0.0
+
+
+def test_dynamic_routing_selects_hybrid_strategy_for_comparisons():
+    router = RetrievalRouter(enabled=True)
+
+    route = router.route("Compare the H100 versus A100 for training performance", {"intent": "COMPARATIVE", "entities": ["H100", "A100"]})
+
+    assert route.strategy == "hybrid"
+    assert route.alpha > 0.5
 
 
 def test_build_context_text_truncates_to_token_budget():
