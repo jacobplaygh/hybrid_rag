@@ -2,10 +2,12 @@ import asyncio
 import shutil
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 from fastapi.testclient import TestClient
 
 from api.main import app
+from api.config import get_settings
 from rag.hybrid_rag import HybridRAG
 from rag.retrieval import HybridRetriever, RetrievedDoc
 from rag.retrieval_router import RetrievalRouter
@@ -43,6 +45,45 @@ def test_build_context_text_truncates_to_token_budget():
 
     assert context_text
     assert rag._estimate_tokens(context_text, "", None) <= 400
+
+
+def test_query_uses_agentic_documents_and_exposes_loop_metadata():
+    doc = {
+        "content": "Agentic retrieval found the relevant document.",
+        "source": "agentic.txt",
+        "score": 0.95,
+        "relevance_score": 0.95,
+    }
+
+    rag = HybridRAG(vector_store=object(), chat_llm=None, reasoning_llm=None, structured_llm=None, tracer=None)
+    rag.agentic_loop = SimpleNamespace(
+        retrieve_with_retry=AsyncMock(return_value={
+            "documents": [doc],
+            "confidence": 0.88,
+            "iterations": 2,
+            "final_status": "success",
+            "queries_tried": ["original question", "refined question"],
+            "reformulation_reasons": ["Added missing terminology"],
+            "missing_aspects": [],
+        })
+    )
+    rag.retriever = SimpleNamespace(
+        bm25=object(),
+        get_retrieval_diagnostics=lambda _retrieval_id: {"retrieval_time_ms": 1},
+    )
+
+    result = asyncio.run(rag.query("original question"))
+
+    assert result["retrieved_docs"] == [doc]
+    assert result["agentic_loop"] == {
+        "enabled": True,
+        "status": "success",
+        "confidence": 0.88,
+        "iterations": 2,
+        "queries_tried": ["original question", "refined question"],
+        "reformulation_reasons": ["Added missing terminology"],
+        "missing_aspects": [],
+    }
 
 
 def test_rerank_falls_back_to_lexical_scoring_when_model_unavailable():
@@ -358,3 +399,38 @@ def test_simple_query_cache_hits_on_repeat():
     assert first_body["processing_time_ms"] == second_body["processing_time_ms"]
     assert first_body["tokens_used"] == second_body["tokens_used"]
     assert first_body["model_used"] == second_body["model_used"]
+
+
+def test_corrective_rag_retries_when_initial_context_is_low_confidence():
+    rag = HybridRAG(vector_store=object(), chat_llm=None, reasoning_llm=None, structured_llm=None, tracer=None)
+    settings = get_settings()
+    settings.CRAG_ENABLED = True
+    settings.CRAG_CONFIDENCE_THRESHOLD = 0.55
+    settings.CRAG_MAX_FALLBACKS = 2
+
+    low_doc = SimpleNamespace(doc_id="low-doc", content="legacy context", source="low.txt", score=0.2)
+    low_doc.to_dict = lambda: {"doc_id": "low-doc", "content": "legacy context", "source": "low.txt", "score": 0.2}
+    high_doc = SimpleNamespace(doc_id="high-doc", content="relevant engineered fix detail", source="high.txt", score=0.9)
+    high_doc.to_dict = lambda: {"doc_id": "high-doc", "content": "relevant engineered fix detail", "source": "high.txt", "score": 0.9}
+
+    async def fake_retrieve(query, top_k=None, alpha=None):
+        if "details" in query.lower() or "overview" in query.lower():
+            return [high_doc], "high-retrieval"
+        return [low_doc], "low-retrieval"
+
+    rag.retriever = SimpleNamespace(retrieve=fake_retrieve, get_retrieval_diagnostics=lambda _id: {"retrieval_time_ms": 0})
+    rag.reranker = SimpleNamespace(rerank=lambda query, docs, top_k=None: docs)
+
+    docs, metadata = asyncio.run(
+        rag._apply_corrective_retrieval(
+            "engine failure after startup",
+            [low_doc],
+            analysis={"entities": ["engine"]},
+            top_k=3,
+            retrieval_alpha=0.7,
+        )
+    )
+
+    assert metadata["triggered"] is True
+    assert metadata["queries_tried"]
+    assert docs[0].doc_id == "high-doc"

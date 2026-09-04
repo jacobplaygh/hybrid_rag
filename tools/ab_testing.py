@@ -19,6 +19,12 @@ class EvaluationRow:
     latency_delta_ms: float
     baseline_status: str
     agentic_status: str
+    baseline_context_relevance: float
+    agentic_context_relevance: float
+    baseline_groundedness: float
+    agentic_groundedness: float
+    baseline_answer_relevance: float
+    agentic_answer_relevance: float
     winner: str
 
 
@@ -103,6 +109,37 @@ def _coerce_result(payload: Any) -> Dict[str, Any]:
     return {"status": "success", "confidence": 0.0}
 
 
+def _answer_quality(result: Dict[str, Any], expected: Sequence[str]) -> Dict[str, float]:
+    """Calculate lightweight answer-level metrics from an evaluator payload."""
+    expected_terms = _normalize_tokens(" ".join(str(item) for item in expected))
+    documents = result.get("retrieved_docs", result.get("documents", []))
+    context = " ".join(
+        str(doc.get("content", "")) if isinstance(doc, dict) else str(doc)
+        for doc in documents or []
+    )
+    answer = str(result.get("response", result.get("answer", "")))
+    context_terms = _normalize_tokens(context)
+    answer_terms = _normalize_tokens(answer)
+
+    context_relevance = (
+        len(expected_terms & context_terms) / len(expected_terms)
+        if expected_terms else 0.0
+    )
+    answer_relevance = (
+        len(expected_terms & answer_terms) / len(expected_terms)
+        if expected_terms else 0.0
+    )
+    groundedness = (
+        len(answer_terms & context_terms) / len(answer_terms)
+        if answer_terms else 0.0
+    )
+    return {
+        "context_relevance": context_relevance,
+        "groundedness": groundedness,
+        "answer_relevance": answer_relevance,
+    }
+
+
 def run_ab_test(
     dataset: Iterable[Dict[str, Any]],
     baseline_fn: Callable[[str], Any],
@@ -136,6 +173,8 @@ def run_ab_test(
 
         baseline_status = _extract_status(baseline_result)
         agentic_status = _extract_status(agentic_result)
+        baseline_quality = _answer_quality(baseline_result, expected)
+        agentic_quality = _answer_quality(agentic_result, expected)
         if baseline_status == "success" or baseline_conf >= 0.7:
             baseline_successes += 1
         if agentic_status == "success" or agentic_conf >= 0.7:
@@ -158,6 +197,12 @@ def run_ab_test(
             latency_delta_ms=latency_delta,
             baseline_status=baseline_status,
             agentic_status=agentic_status,
+            baseline_context_relevance=baseline_quality["context_relevance"],
+            agentic_context_relevance=agentic_quality["context_relevance"],
+            baseline_groundedness=baseline_quality["groundedness"],
+            agentic_groundedness=agentic_quality["groundedness"],
+            baseline_answer_relevance=baseline_quality["answer_relevance"],
+            agentic_answer_relevance=agentic_quality["answer_relevance"],
             winner=winner,
         )
         rows.append(row)
@@ -181,6 +226,12 @@ def run_ab_test(
         "mean_agentic_latency_ms": total_agentic_latency / total_cases,
         "confidence_delta": (total_agentic_conf - total_baseline_conf) / total_cases,
         "latency_delta_ms": (total_agentic_latency - total_baseline_latency) / total_cases,
+        "mean_baseline_context_relevance": sum(row.baseline_context_relevance for row in rows) / total_cases,
+        "mean_agentic_context_relevance": sum(row.agentic_context_relevance for row in rows) / total_cases,
+        "mean_baseline_groundedness": sum(row.baseline_groundedness for row in rows) / total_cases,
+        "mean_agentic_groundedness": sum(row.agentic_groundedness for row in rows) / total_cases,
+        "mean_baseline_answer_relevance": sum(row.baseline_answer_relevance for row in rows) / total_cases,
+        "mean_agentic_answer_relevance": sum(row.agentic_answer_relevance for row in rows) / total_cases,
         "winner": "agentic" if (total_agentic_conf - total_baseline_conf) > 0 else "baseline",
         "rows": [asdict(row) for row in rows],
     }
@@ -225,12 +276,59 @@ def _import_callable(spec: str) -> Callable[[str], Any]:
     return fn
 
 
+def suggest_agentic_parameters(dataset: Iterable[Dict[str, Any]], *, max_retries_values: Sequence[int] = (1, 2, 3), confidence_thresholds: Sequence[float] = (0.55, 0.65, 0.75, 0.85), retry_strategies: Sequence[str] = ("auto", "add_keywords", "broaden")) -> Dict[str, Any]:
+    dataset_rows = list(dataset)
+    if not dataset_rows:
+        raise ValueError("No dataset rows provided for parameter tuning")
+
+    scored: List[Dict[str, Any]] = []
+    for max_retries in max_retries_values:
+        for threshold in confidence_thresholds:
+            for strategy in retry_strategies:
+                def simulated_agentic(query: str, *, cfg=(max_retries, threshold, strategy)) -> Dict[str, Any]:
+                    overlap = _lexical_overlap_score(query, [
+                        "fastapi backend environment configuration vector store hybrid retrieval",
+                        "observability metrics tracing model api schema query flow validation",
+                        "retrieval loop reformulation retry confidence sufficiency",
+                    ])
+                    confidence = round(max(0.3, overlap + 0.18 + (cfg[0] * 0.06) - (cfg[1] - 0.6) * 0.4), 4)
+                    latency_ms = 170 + (cfg[0] * 35)
+                    status = "success" if confidence >= cfg[1] else "low_confidence"
+                    return {"status": status, "confidence": confidence, "latency_ms": latency_ms}
+
+                summary = run_ab_test(dataset_rows, _default_baseline_for, simulated_agentic, limit=len(dataset_rows))
+                score = (
+                    (summary["agentic_success_rate"] - summary["baseline_success_rate"]) * 100.0
+                    + (summary["mean_agentic_confidence"] - summary["mean_baseline_confidence"]) * 100.0
+                    - (max(summary["mean_agentic_latency_ms"] - summary["mean_baseline_latency_ms"], 0.0) / 10.0)
+                )
+                scored.append({
+                    "max_retries": max_retries,
+                    "confidence_threshold": threshold,
+                    "retry_strategy": strategy,
+                    "score": round(score, 4),
+                    "summary": summary,
+                })
+
+    recommended = sorted(scored, key=lambda item: item["score"], reverse=True)[0]
+    return {
+        "recommended": {
+            "max_retries": recommended["max_retries"],
+            "confidence_threshold": recommended["confidence_threshold"],
+            "retry_strategy": recommended["retry_strategy"],
+            "score": recommended["score"],
+        },
+        "candidates": scored,
+    }
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Compare a baseline RAG strategy to an agentic variant on a representative dataset.")
     parser.add_argument("--dataset", default="tools/agentic_eval_queries.jsonl", help="Path to JSONL evaluation dataset")
     parser.add_argument("--limit", type=int, default=None, help="Optional cap on the number of cases to evaluate")
     parser.add_argument("--baseline", default="", help="Optional module:function for the baseline evaluator (e.g. mymodule:baseline_run)")
     parser.add_argument("--agentic", default="", help="Optional module:function for the agentic evaluator (e.g. mymodule:agentic_run)")
+    parser.add_argument("--tune", action="store_true", help="Recommend agentic loop settings from a small parameter grid")
     return parser
 
 
@@ -238,6 +336,11 @@ def main() -> None:
     parser = _build_parser()
     args = parser.parse_args()
     dataset = load_dataset(args.dataset)
+    if args.tune:
+        rec = suggest_agentic_parameters(dataset)
+        print(json.dumps(rec, indent=2))
+        return
+
     baseline_fn = _import_callable(args.baseline) if args.baseline else _default_baseline_for
     agentic_fn = _import_callable(args.agentic) if args.agentic else _default_agentic_for
     summary = run_ab_test(dataset, baseline_fn, agentic_fn, limit=args.limit)

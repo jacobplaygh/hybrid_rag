@@ -7,6 +7,7 @@ import logging
 import re
 import time
 import uuid
+from types import SimpleNamespace
 from typing import List, Optional, Dict, Any
 from datetime import datetime, timezone
 from rag.reranker import CrossEncoderReranker
@@ -16,6 +17,7 @@ from rag.query_understanding import QueryUnderstanding
 from rag.chains import create_chains, QueryDecomposerChain
 from rag.retrieval import HybridRetriever
 from rag.retrieval_router import RetrievalRouter
+from rag.graph_rag import KnowledgeGraph
 from rag.memory import ConversationMemory
 from rag.semantic_cache import SemanticCache
 from rag.context_manager import ContextManager
@@ -93,6 +95,7 @@ class HybridRAG:
 
         settings = get_settings()
         self.retrieval_router = RetrievalRouter(enabled=getattr(settings, "DYNAMIC_ROUTING_ENABLED", True))
+        self.graph_rag = KnowledgeGraph()
 
         # Initialize Context Manager
         self.context_manager = ContextManager(
@@ -144,6 +147,11 @@ class HybridRAG:
             else:
                 logger.warning("Semantic cache enabled but no embedding model found in vector store")
                 self.semantic_cache = None
+
+    def register_graph_documents(self, documents: List[Any]) -> None:
+        """Index a document set in the lightweight knowledge graph."""
+        if self.graph_rag:
+            self.graph_rag.index_documents(documents)
 
     async def execute_constrained_query(self, query: str, policy: WorkflowPolicy) -> Dict[str, Any]:
         """
@@ -266,6 +274,129 @@ class HybridRAG:
                 logger.info("✅ Keyword index initialized for hybrid retrieval")
         except Exception as exc:
             logger.warning(f"Keyword index initialization failed: {exc}")
+
+    def _doc_to_confidence_payload(self, doc: Any) -> Dict[str, Any]:
+        """Normalize retrieved docs into a dict structure for confidence scoring."""
+        if isinstance(doc, dict):
+            payload = dict(doc)
+        elif hasattr(doc, "to_dict"):
+            payload = doc.to_dict()
+        else:
+            payload = {
+                "content": getattr(doc, "content", ""),
+                "source": getattr(doc, "source", "unknown"),
+                "score": getattr(doc, "score", 0.0),
+            }
+
+        if "relevance_score" not in payload and "score" in payload:
+            payload["relevance_score"] = float(payload.get("score", 0.0))
+        return payload
+
+    def _retrieval_confidence(self, documents: List[Any]) -> float:
+        """Estimate retrieval confidence for a document set."""
+        if not documents:
+            return 0.0
+
+        payload = [self._doc_to_confidence_payload(doc) for doc in documents]
+        score = self.confidence_scorer.score_response(payload, "candidate answer")
+        return float(score.overall_score)
+
+    def _build_corrective_queries(self, query: str, analysis: Optional[Dict[str, Any]] = None) -> List[str]:
+        """Generate alternative retrieval queries for corrective fallback."""
+        candidate_queries = [query.strip()]
+        analysis = analysis or {}
+
+        entities = [entity for entity in (analysis.get("entities") or []) if isinstance(entity, str) and entity.strip()]
+        if entities:
+            candidate_queries.append(" ".join(entities))
+            candidate_queries.extend(f"{entity} details" for entity in entities[:3])
+
+        tokens = re.findall(r"[A-Za-z0-9][A-Za-z0-9.-]{2,}", query)
+        if tokens:
+            candidate_queries.append(" ".join(tokens[:5]))
+
+        if " " in query:
+            candidate_queries.append(f"{query} overview")
+            candidate_queries.append(f"{query} explain")
+
+        deduped: List[str] = []
+        seen = set()
+        for candidate in candidate_queries:
+            normalized = candidate.strip()
+            if normalized and normalized.lower() not in seen:
+                deduped.append(normalized)
+                seen.add(normalized.lower())
+        return deduped[:5]
+
+    async def _apply_corrective_retrieval(
+        self,
+        query: str,
+        context_docs: List[Any],
+        analysis: Optional[Dict[str, Any]] = None,
+        top_k: int = 5,
+        retrieval_alpha: float = 0.7,
+    ) -> tuple[List[Any], Dict[str, Any]]:
+        """Trigger corrective fallback retrieval when the initial context is under-confident."""
+        settings = get_settings()
+        if not getattr(settings, "CRAG_ENABLED", True):
+            return context_docs, {"triggered": False, "confidence": self._retrieval_confidence(context_docs), "queries_tried": []}
+
+        current_confidence = self._retrieval_confidence(context_docs)
+        threshold = float(getattr(settings, "CRAG_CONFIDENCE_THRESHOLD", 0.55))
+        if current_confidence >= threshold and len(context_docs) > 0:
+            return context_docs, {"triggered": False, "confidence": current_confidence, "queries_tried": []}
+
+        fallback_queries = self._build_corrective_queries(query, analysis)
+        fallback_docs: List[Any] = []
+        queries_tried: List[str] = []
+        max_fallbacks = int(getattr(settings, "CRAG_MAX_FALLBACKS", 2))
+
+        for fallback_query in fallback_queries[1:][:max_fallbacks + 1]:
+            queries_tried.append(fallback_query)
+            docs, _ = await self.retriever.retrieve(
+                fallback_query,
+                top_k=max(top_k, 3),
+                alpha=max(0.2, min(1.0, retrieval_alpha * 0.8)),
+            )
+            if self.reranker:
+                reranked = self.reranker.rerank(fallback_query, docs, top_k=top_k)
+                if reranked is not None:
+                    docs = reranked
+            fallback_docs.extend(docs)
+
+            if self._retrieval_confidence(fallback_docs) >= threshold:
+                break
+
+        if not fallback_docs:
+            return context_docs, {"triggered": False, "confidence": current_confidence, "queries_tried": queries_tried}
+
+        deduped_fallback: List[Any] = []
+        seen_ids = set()
+        for doc in fallback_docs:
+            key = None
+            if isinstance(doc, dict):
+                key = doc.get("doc_id") or doc.get("source") or doc.get("content", "")
+            else:
+                key = getattr(doc, "doc_id", None) or getattr(doc, "source", "") or getattr(doc, "content", "")
+            if key and key in seen_ids:
+                continue
+            deduped_fallback.append(doc)
+            seen_ids.add(key)
+
+        deduped_fallback.sort(
+            key=lambda doc: float(self._doc_to_confidence_payload(doc).get("relevance_score", self._doc_to_confidence_payload(doc).get("score", 0.0))),
+            reverse=True,
+        )
+
+        updated_confidence = self._retrieval_confidence(deduped_fallback)
+        triggered = updated_confidence > current_confidence or len(deduped_fallback) > len(context_docs)
+        return (deduped_fallback if triggered else context_docs), {
+            "triggered": triggered,
+            "confidence": updated_confidence,
+            "queries_tried": queries_tried,
+            "original_confidence": current_confidence,
+            "fallback_threshold": threshold,
+        }
 
     async def query(
         self,
@@ -465,21 +596,40 @@ class HybridRAG:
                         agentic_loop_result.get("confidence", 0.0),
                         agentic_loop_result.get("iterations", 0),
                     )
-                
+
                 if not context_docs:
                     context_docs, retrieval_id = await self.retriever.retrieve(
                         query,
-                        top_k=top_k * 5 if not (stream and mode == "simple") else top_k,  # Retrieve more for reranking if not simple stream
+                        top_k=top_k * 5 if not (stream and mode == "simple") else top_k,
                         alpha=retrieval_alpha,
                     )
-                    
-                    # Rerank results to improve precision, unless it's a simple stream where speed is priority
+
                     if not (stream and mode == "simple"):
                         reranked_docs = self.reranker.rerank(query, context_docs, top_k=top_k)
                         context_docs = reranked_docs if reranked_docs is not None else []
                     else:
-                        # For simple stream, just take the top_k from hybrid retrieval
                         context_docs = context_docs[:top_k]
+
+                graph_trigger = analysis.get("intent") in {"COMPLEX", "COMPARATIVE"} or any(
+                    token in query.lower() for token in ["related", "depends on", "connects to", "compares", "versus"]
+                )
+                if self.graph_rag and graph_trigger:
+                    graph_results = self.graph_rag.retrieve(query, top_k=top_k)
+                    if graph_results:
+                        for result in graph_results:
+                            graph_doc = SimpleNamespace(
+                                content=result["content"],
+                                source=result["source"],
+                                score=result["score"],
+                                metadata=result.get("metadata", {}),
+                            )
+                            graph_doc.to_dict = lambda r=result: {
+                                "content": r["content"],
+                                "source": r["source"],
+                                "score": r["score"],
+                                "metadata": r.get("metadata", {}),
+                            }
+                            context_docs.append(graph_doc)
             
             retrieval_end = datetime.now(timezone.utc)
             retrieval_time_ms = (retrieval_end - retrieval_start).total_seconds() * 1000
@@ -494,6 +644,13 @@ class HybridRAG:
                 context_docs=context_docs,
                 query=query,
                 history=history
+            )
+            context_docs, crag_metadata = await self._apply_corrective_retrieval(
+                query=query,
+                context_docs=context_docs,
+                analysis=analysis,
+                top_k=top_k,
+                retrieval_alpha=retrieval_alpha,
             )
             context_text = self._build_context_text(context_docs, query)
             
@@ -650,6 +807,7 @@ class HybridRAG:
                 "retrieval_strategy": retrieval_strategy,
                 "retrieval_alpha": retrieval_alpha,
                 "retrieval_reason": retrieval_reason,
+                "corrective_retrieval": crag_metadata,
                 "agentic_loop": None,
             }
             if agentic_loop_result:

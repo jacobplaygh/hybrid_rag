@@ -611,7 +611,11 @@ class AgenticRetrieverLoop:
         try:
             # Retrieve documents
             retrieval_start = time.time()
-            retrieved_docs = await self.retriever.retrieve(query, top_k=5)
+            retrieval_result = await self.retriever.retrieve(query, top_k=5)
+            if isinstance(retrieval_result, tuple):
+                retrieved_docs = retrieval_result[0]
+            else:
+                retrieved_docs = retrieval_result
             retrieval_latency = time.time() - retrieval_start
             
             # Convert to dict format for evaluation
@@ -621,6 +625,14 @@ class AgenticRetrieverLoop:
                     "content": doc.content if hasattr(doc, 'content') else doc.get('content'),
                     "source": doc.source if hasattr(doc, 'source') else doc.get('source'),
                     "score": doc.score if hasattr(doc, 'score') else doc.get('score'),
+                    "relevance_score": (
+                        doc.relevance_score if hasattr(doc, 'relevance_score')
+                        else (
+                            doc.get('relevance_score', doc.get('score', 0))
+                            if isinstance(doc, dict)
+                            else getattr(doc, 'score', 0)
+                        )
+                    ),
                 }
                 for doc in retrieved_docs
             ]
@@ -653,7 +665,7 @@ class AgenticRetrieverLoop:
             )
             
             return {
-                "documents": retrieved_docs,
+                "documents": docs_dict,
                 "confidence": evaluation.confidence,
                 "evaluation": evaluation,
             }
