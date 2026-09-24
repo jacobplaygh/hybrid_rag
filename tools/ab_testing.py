@@ -140,6 +140,29 @@ def _answer_quality(result: Dict[str, Any], expected: Sequence[str]) -> Dict[str
     }
 
 
+def assess_rollout_gate(
+    summary: Dict[str, Any],
+    *,
+    quality_regression_tolerance: float = 0.05,
+    max_latency_delta_ms: float = 200.0,
+) -> Dict[str, Any]:
+    """Decide whether the agentic variant is safe to enable by default."""
+    checks = {
+        "success_rate": summary["agentic_success_rate"] >= summary["baseline_success_rate"],
+        "context_relevance": summary["mean_agentic_context_relevance"]
+        >= summary["mean_baseline_context_relevance"] - quality_regression_tolerance,
+        "groundedness": summary["mean_agentic_groundedness"]
+        >= summary["mean_baseline_groundedness"] - quality_regression_tolerance,
+        "latency": summary["latency_delta_ms"] <= max_latency_delta_ms,
+    }
+    return {
+        "passed": all(checks.values()),
+        "checks": checks,
+        "quality_regression_tolerance": quality_regression_tolerance,
+        "max_latency_delta_ms": max_latency_delta_ms,
+    }
+
+
 def run_ab_test(
     dataset: Iterable[Dict[str, Any]],
     baseline_fn: Callable[[str], Any],
@@ -235,6 +258,7 @@ def run_ab_test(
         "winner": "agentic" if (total_agentic_conf - total_baseline_conf) > 0 else "baseline",
         "rows": [asdict(row) for row in rows],
     }
+    summary["rollout_gate"] = assess_rollout_gate(summary)
     return summary
 
 

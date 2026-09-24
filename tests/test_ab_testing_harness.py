@@ -4,6 +4,7 @@ from tools.ab_testing import (
     _answer_quality,
     _default_agentic_for,
     _default_baseline_for,
+    assess_rollout_gate,
     load_dataset,
     run_ab_test,
     suggest_agentic_parameters,
@@ -77,3 +78,36 @@ def test_suggest_agentic_parameters_returns_recommended_settings():
     assert recommendation["recommended"]["confidence_threshold"] >= 0.55
     assert recommendation["recommended"]["retry_strategy"] in {"auto", "add_keywords", "broaden"}
     assert recommendation["recommended"]["score"]
+
+
+def test_rollout_gate_rejects_quality_or_success_regressions():
+    summary = {
+        "baseline_success_rate": 1.0,
+        "agentic_success_rate": 0.8,
+        "mean_baseline_context_relevance": 0.4,
+        "mean_agentic_context_relevance": 0.2,
+        "mean_baseline_groundedness": 0.7,
+        "mean_agentic_groundedness": 0.6,
+        "latency_delta_ms": 60.0,
+    }
+
+    gate = assess_rollout_gate(summary)
+
+    assert gate["passed"] is False
+    assert gate["checks"]["success_rate"] is False
+    assert gate["checks"]["context_relevance"] is False
+    assert gate["checks"]["groundedness"] is False
+
+
+def test_rollout_gate_accepts_non_regressing_variant():
+    summary = {
+        "baseline_success_rate": 0.8,
+        "agentic_success_rate": 0.9,
+        "mean_baseline_context_relevance": 0.4,
+        "mean_agentic_context_relevance": 0.38,
+        "mean_baseline_groundedness": 0.7,
+        "mean_agentic_groundedness": 0.68,
+        "latency_delta_ms": 120.0,
+    }
+
+    assert assess_rollout_gate(summary)["passed"] is True
