@@ -298,8 +298,14 @@ class HybridRAG:
             return 0.0
 
         payload = [self._doc_to_confidence_payload(doc) for doc in documents]
-        score = self.confidence_scorer.score_response(payload, "candidate answer")
-        return float(score.overall_score)
+        # We pass an empty string as response because we are scoring the retrieval phase, not the generation phase
+        score = self.confidence_scorer.score_response(payload, "")
+        
+        # In retrieval phase, we primarily care about relevance and source quality
+        # We weight these more heavily than the LLM confidence (which will be 0.7 default for empty response)
+        retrieval_conf = (score.relevance_score * 0.6) + (score.source_quality * 0.4)
+        
+        return float(retrieval_conf)
 
     def _build_corrective_queries(self, query: str, analysis: Optional[Dict[str, Any]] = None) -> List[str]:
         """Generate alternative retrieval queries for corrective fallback."""
@@ -582,12 +588,15 @@ class HybridRAG:
                 context_docs = []
                 retrieval_id = None
                 agentic_loop_result = None
+                
                 if self.agentic_loop and settings.AGENTIC_LOOP_ENABLED and not (mode == "decompose"):
                     agentic_loop_result = await self.agentic_loop.retrieve_with_retry(
                         query=query,
                         top_k=top_k,
                         query_decomposition=analysis.get("sub_queries") or None,
                     )
+                    # Agentic loop returns docs as dicts, we need to ensure they are compatible with the rest of the pipeline
+                    # The loop already handles the retrieval and reranking internally via self.retriever
                     context_docs = agentic_loop_result.get("documents", [])
                     retrieval_id = f"agentic-{query_id}"
                     logger.info(
@@ -596,8 +605,26 @@ class HybridRAG:
                         agentic_loop_result.get("confidence", 0.0),
                         agentic_loop_result.get("iterations", 0),
                     )
-
-                if not context_docs:
+                else:
+                    # Fallback to standard hybrid retrieval
+                    retrieval_start_time = time.time()
+                    retrieval_result = await self.retriever.retrieve(
+                        query, 
+                        top_k=top_k, 
+                        alpha=retrieval_alpha
+                    )
+                    
+                    if isinstance(retrieval_result, tuple):
+                        context_docs = retrieval_result[0]
+                    else:
+                        context_docs = retrieval_result
+                        
+                    if self.reranker:
+                        reranked = self.reranker.rerank(query, context_docs, top_k=top_k)
+                        context_docs = reranked if reranked is not None else context_docs
+                    
+                    retrieval_id = f"hybrid-{query_id}"
+                    logger.info(f"🔍 Standard retrieval complete: {len(context_docs)} docs retrieved")
                     context_docs, retrieval_id = await self.retriever.retrieve(
                         query,
                         top_k=top_k * 5 if not (stream and mode == "simple") else top_k,

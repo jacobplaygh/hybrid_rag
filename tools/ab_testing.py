@@ -239,27 +239,36 @@ def run_ab_test(
 
 
 def _default_baseline_for(query: str) -> Dict[str, Any]:
-    overlap = _lexical_overlap_score(query, [
-        "fastapi backend environment configuration vector store hybrid retrieval",
-        "observability metrics tracing model api schema",
-    ])
+    evidence = [
+        "FastAPI backend setup and environment configuration use application settings, runtime environment variables, and startup configuration.",
+        "The vector store abstraction manages embeddings and document storage while the retrieval layer combines lexical and semantic matching.",
+        "Observability includes metrics, tracing, and logging for latency, cache hits, and query performance.",
+    ]
+    overlap = _lexical_overlap_score(query, evidence)
+    response = "The backend is configured with FastAPI settings and environment variables for service startup and runtime behavior."
     return {
         "status": "success" if overlap >= 0.15 else "low_confidence",
         "confidence": round(0.35 + overlap * 0.45, 4),
         "latency_ms": 160,
+        "response": response,
+        "retrieved_docs": [{"content": text} for text in evidence],
     }
 
 
 def _default_agentic_for(query: str) -> Dict[str, Any]:
-    overlap = _lexical_overlap_score(query, [
-        "fastapi backend environment configuration vector store hybrid retrieval",
-        "observability metrics tracing model api schema query flow validation",
-        "retrieval loop reformulation retry confidence sufficiency",
-    ])
+    evidence = [
+        "The FastAPI backend uses environment configuration, startup settings, and runtime variables to configure the application and services.",
+        "Query flow validation includes retrieval, reranking, and retry loops that improve answer confidence when initial context is incomplete.",
+        "Agentic retrieval reformulates queries with additional keywords and confidence checks before returning the final answer.",
+    ]
+    overlap = _lexical_overlap_score(query, evidence)
+    response = "The backend configuration is managed through FastAPI settings and environment variables, then refined by the agentic loop when context confidence is insufficient."
     return {
         "status": "success" if overlap >= 0.2 else "low_confidence",
         "confidence": round(0.5 + overlap * 0.45, 4),
         "latency_ms": 220,
+        "response": response,
+        "retrieved_docs": [{"content": text} for text in evidence],
     }
 
 
@@ -286,20 +295,32 @@ def suggest_agentic_parameters(dataset: Iterable[Dict[str, Any]], *, max_retries
         for threshold in confidence_thresholds:
             for strategy in retry_strategies:
                 def simulated_agentic(query: str, *, cfg=(max_retries, threshold, strategy)) -> Dict[str, Any]:
-                    overlap = _lexical_overlap_score(query, [
-                        "fastapi backend environment configuration vector store hybrid retrieval",
-                        "observability metrics tracing model api schema query flow validation",
-                        "retrieval loop reformulation retry confidence sufficiency",
-                    ])
+                    evidence = [
+                        "FastAPI backend setup and environment configuration use application settings, runtime environment variables, and service configuration.",
+                        "Hybrid retrieval combines lexical BM25 matching with semantic vector search and reranking for precision.",
+                        "Observability includes metrics, tracing, and validation to monitor latency, quality, and hallucination risk.",
+                    ]
+                    overlap = _lexical_overlap_score(query, evidence)
                     confidence = round(max(0.3, overlap + 0.18 + (cfg[0] * 0.06) - (cfg[1] - 0.6) * 0.4), 4)
                     latency_ms = 170 + (cfg[0] * 35)
                     status = "success" if confidence >= cfg[1] else "low_confidence"
-                    return {"status": status, "confidence": confidence, "latency_ms": latency_ms}
+                    response = "The response is grounded in the documented system configuration and retrieval workflow."
+                    result = {
+                        "status": status,
+                        "confidence": confidence,
+                        "latency_ms": latency_ms,
+                        "response": response,
+                        "retrieved_docs": [{"content": text} for text in evidence],
+                    }
+                    return result
 
                 summary = run_ab_test(dataset_rows, _default_baseline_for, simulated_agentic, limit=len(dataset_rows))
                 score = (
                     (summary["agentic_success_rate"] - summary["baseline_success_rate"]) * 100.0
                     + (summary["mean_agentic_confidence"] - summary["mean_baseline_confidence"]) * 100.0
+                    + (summary["mean_agentic_context_relevance"] - summary["mean_baseline_context_relevance"]) * 120.0
+                    + (summary["mean_agentic_groundedness"] - summary["mean_baseline_groundedness"]) * 120.0
+                    + (summary["mean_agentic_answer_relevance"] - summary["mean_baseline_answer_relevance"]) * 120.0
                     - (max(summary["mean_agentic_latency_ms"] - summary["mean_baseline_latency_ms"], 0.0) / 10.0)
                 )
                 scored.append({

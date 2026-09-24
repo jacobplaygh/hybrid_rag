@@ -426,7 +426,7 @@ class QueryReformulator:
         return reformulated
     
     async def _strategy_llm(self, query: str, aspects: List[str]) -> str:
-        """LLM-based: use ChatNVIDIA for intelligent reformulation."""
+        """Use the configured LLM for intelligent reformulation."""
         if not self.llm:
             return query
         
@@ -438,9 +438,19 @@ class QueryReformulator:
                 f"Reformulated query (concise, single sentence):"
             )
             
-            # This would be an actual LLM call in production
-            # For now, just add the aspects
-            return f"{query} (also covering: {', '.join(aspects[:2])})"
+            if hasattr(self.llm, "ainvoke"):
+                response = await self.llm.ainvoke(prompt)
+            else:
+                response = await asyncio.to_thread(self.llm.invoke, prompt)
+
+            content = getattr(response, "content", response)
+            if isinstance(content, list):
+                content = " ".join(
+                    item.get("text", "") if isinstance(item, dict) else str(item)
+                    for item in content
+                )
+            reformulated = str(content).strip()
+            return reformulated or self._strategy_add_keywords(query, aspects)
         except Exception as e:
             logger.warning(f"LLM reformulation failed: {e}. Falling back to keywords.")
             return self._strategy_add_keywords(query, aspects)
@@ -519,6 +529,8 @@ class AgenticRetrieverLoop:
                 iteration_result = await self._iteration(
                     query=query if state.iteration == 0 else state.query_history[-1],
                     iteration=state.iteration,
+                    top_k=top_k,
+                    query_decomposition=query_decomposition,
                     state=state
                 )
                 
@@ -560,6 +572,7 @@ class AgenticRetrieverLoop:
             # Build final result
             final_docs = iteration_result.get("documents", [])
             final_confidence = iteration_result.get("confidence", 0.0)
+            final_evaluation = iteration_result.get("evaluation")
             
             state.total_latency_ms = (time.time() - loop_start) * 1000
             
@@ -569,6 +582,10 @@ class AgenticRetrieverLoop:
                 "iterations": state.iteration + 1,
                 "queries_tried": state.query_history,
                 "final_status": state.final_status,
+                "missing_aspects": (
+                    final_evaluation.missing_aspects
+                    if final_evaluation else []
+                ),
                 "metrics": {
                     "total_latency_ms": state.total_latency_ms,
                     "confidence_history": state.confidence_history,
@@ -595,6 +612,8 @@ class AgenticRetrieverLoop:
     async def _iteration(self,
                         query: str,
                         iteration: int,
+                        top_k: int,
+                        query_decomposition: Optional[List[str]],
                         state: AgenticLoopState) -> Dict[str, Any]:
         """
         Execute one iteration of retrieval + evaluation.
@@ -611,7 +630,7 @@ class AgenticRetrieverLoop:
         try:
             # Retrieve documents
             retrieval_start = time.time()
-            retrieval_result = await self.retriever.retrieve(query, top_k=5)
+            retrieval_result = await self.retriever.retrieve(query, top_k=top_k)
             if isinstance(retrieval_result, tuple):
                 retrieved_docs = retrieval_result[0]
             else:
@@ -652,7 +671,7 @@ class AgenticRetrieverLoop:
                 evaluation = await self.evaluator.evaluate(
                     query=query,
                     retrieved_docs=docs_dict,
-                    query_decomposition=None
+                    query_decomposition=query_decomposition
                 )
             
             state.confidence_history.append(evaluation.confidence)

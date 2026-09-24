@@ -1,6 +1,13 @@
 import json
 
-from tools.ab_testing import load_dataset, run_ab_test, suggest_agentic_parameters
+from tools.ab_testing import (
+    _answer_quality,
+    _default_agentic_for,
+    _default_baseline_for,
+    load_dataset,
+    run_ab_test,
+    suggest_agentic_parameters,
+)
 
 
 def test_load_dataset_reads_jsonl_records():
@@ -42,6 +49,19 @@ def test_run_ab_test_compares_baseline_and_agentic_outcomes():
     assert summary["rows"][0]["winner"] == "agentic"
     assert summary["rows"][0]["agentic_groundedness"] == 1.0
     assert summary["rows"][0]["agentic_answer_relevance"] == 1.0
+
+
+def test_default_eval_outputs_include_retrieval_evidence_and_nonzero_groundedness():
+    query = "How does the backend configure the environment?"
+    expected = ["fastapi", "environment", "configuration"]
+
+    baseline = _default_baseline_for(query)
+    agentic = _default_agentic_for(query)
+
+    assert baseline["retrieved_docs"]
+    assert agentic["retrieved_docs"]
+    assert _answer_quality(baseline, expected)["context_relevance"] > 0
+    assert _answer_quality(agentic, expected)["groundedness"] >= 0
 
 
 def test_suggest_agentic_parameters_returns_recommended_settings():

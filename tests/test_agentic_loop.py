@@ -198,6 +198,114 @@ class TestQueryReformulator:
             missing_aspects=aspects,
             strategy="auto"
         )
+        assert result.strategy == "add_keywords"
+        assert "typing" in result.reformulated_query.lower()
+        assert "functions" in result.reformulated_query.lower()
+
+class TestAgenticRetrieverLoop:
+    """Test AgenticRetrieverLoop orchestration."""
+
+    @pytest.fixture
+    def mock_retriever(self):
+        retriever = AsyncMock()
+        # Mock retrieve to return (docs, metadata)
+        retriever.retrieve.return_value = (
+            [{"doc_id": "1", "content": "test content", "source": "src1", "score": 0.8}],
+            {"latency": 0.1}
+        )
+        return retriever
+
+    @pytest.fixture
+    def mock_scorer(self):
+        scorer = Mock()
+        # Mock score_response to return an object with overall_score
+        score_obj = MagicMock()
+        score_obj.overall_score = 0.8
+        scorer.score_response.return_value = score_obj
+        return scorer
+
+    @pytest.fixture
+    def loop(self, mock_retriever, mock_scorer):
+        config = AgenticLoopConfig(
+            max_retries=3,
+            confidence_threshold=0.7,
+            retry_strategy="auto",
+            timeout_seconds=10
+        )
+        return AgenticRetrieverLoop(
+            retriever=mock_retriever,
+            confidence_scorer=mock_scorer,
+            evaluator=ContextSufficiencyEvaluator(mock_scorer),
+            reformulator=QueryReformulator(use_llm=False),
+            config=config
+        )
+
+    @pytest.mark.asyncio
+    async def test_loop_success_first_try(self, loop, mock_retriever):
+        """Test loop that succeeds on the first retrieval."""
+        query = "What is AI?"
+        
+        # Mock evaluator to return sufficient
+        loop.evaluator.evaluate = AsyncMock(return_value=SufficiencyEvaluation(
+            confidence=0.8,
+            is_sufficient=True,
+            metrics={"term_coverage": 0.9},
+            missing_aspects=[]
+        ))
+
+        result = await loop.retrieve_iteratively(query)
+        
+        assert result["is_sufficient"] is True
+        assert mock_retriever.retrieve.call_count == 1
+        assert len(result["documents"]) > 0
+
+    @pytest.mark.asyncio
+    async def test_loop_iterative_correction(self, loop, mock_retriever):
+        """Test loop that requires reformulation to reach sufficiency."""
+        query = "What is AI?"
+        
+        # First call: insufficient, Second call: sufficient
+        loop.evaluator.evaluate = AsyncMock(side_effect=[
+            SufficiencyEvaluation(
+                confidence=0.4,
+                is_sufficient=False,
+                metrics={"term_coverage": 0.3},
+                missing_aspects=["deep learning"]
+            ),
+            SufficiencyEvaluation(
+                confidence=0.8,
+                is_sufficient=True,
+                metrics={"term_coverage": 0.9},
+                missing_aspects=[]
+            )
+        ])
+
+        result = await loop.retrieve_iteratively(query)
+        
+        assert result["is_sufficient"] is True
+        assert mock_retriever.retrieve.call_count == 2
+        assert result["iterations"] == 2
+
+    @pytest.mark.asyncio
+    async def test_loop_max_retries_reached(self, loop, mock_retriever):
+        """Test loop that fails to reach sufficiency within max_retries."""
+        query = "What is AI?"
+        
+        # Always return insufficient
+        loop.evaluator.evaluate = AsyncMock(return_value=SufficiencyEvaluation(
+            confidence=0.3,
+            is_sufficient=False,
+            metrics={"term_coverage": 0.2},
+            missing_aspects=["something"]
+        ))
+
+        result = await loop.retrieve_iteratively(query)
+        
+        assert result["is_sufficient"] is False
+        # max_retries is 3, so total attempts = 1 (initial) + 3 (retries) = 4
+        assert mock_retriever.retrieve.call_count == 4
+        assert result["iterations"] == 4
+
         
         # Without LLM, should fall back to add_keywords
         assert result.strategy == "add_keywords"
@@ -286,13 +394,42 @@ class TestAgenticRetrieverLoop:
         """Test successful retrieval on first attempt."""
         result = await agentic_loop.retrieve_with_retry(
             query="What is Python?",
-            top_k=5
+            top_k=3
         )
         
         assert result["final_status"] == "success"
         assert result["iterations"] == 1
         assert len(result["documents"]) > 0
         assert result["confidence"] > 0.0
+        agentic_loop.retriever.retrieve.assert_awaited_once_with(
+            "What is Python?", top_k=3
+        )
+
+    @pytest.mark.asyncio
+    async def test_retrieve_passes_query_decomposition_to_evaluator(
+        self, agentic_loop, mock_evaluator
+    ):
+        decomposition = ["What is Python?", "What is it used for?"]
+
+        await agentic_loop.retrieve_with_retry(
+            query="What is Python used for?",
+            query_decomposition=decomposition,
+        )
+
+        assert mock_evaluator.evaluate.await_args.kwargs["query_decomposition"] == decomposition
+
+    @pytest.mark.asyncio
+    async def test_llm_reformulation_uses_async_model(self):
+        llm = AsyncMock()
+        llm.ainvoke.return_value = Mock(content="Find Python uses in data science")
+        reformulator = QueryReformulator(llm=llm)
+
+        result = await reformulator.reformulate(
+            "What is Python?", ["data science"], strategy="auto"
+        )
+
+        assert result.reformulated_query == "Find Python uses in data science"
+        llm.ainvoke.assert_awaited_once()
     
     @pytest.mark.asyncio
     async def test_retrieve_with_retry_needs_reformulation(self, agentic_loop, mock_evaluator):

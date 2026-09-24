@@ -31,6 +31,24 @@ class RetrievalRouter:
                 reason="comparative queries need semantic breadth and lexical precision",
             )
 
+        dependency_tokens = [
+            "depend on",
+            "depends on",
+            "related to",
+            "connected to",
+            "built on",
+            "influenced by",
+            "affects",
+            "causes",
+            "relies on",
+        ]
+        if any(token in normalized for token in dependency_tokens):
+            return RetrievalRoute(
+                strategy="hybrid",
+                alpha=0.8,
+                reason="dependency and relational queries need broader recall across connected concepts",
+            )
+
         if intent == "NAVIGATIONAL" or any(term in normalized for term in ["part number", "product id", "version", "error code", "section", "document", "guide", "file name"]):
             return RetrievalRoute(
                 strategy="keyword",

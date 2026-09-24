@@ -34,6 +34,18 @@ def test_dynamic_routing_selects_hybrid_strategy_for_comparisons():
     assert route.alpha > 0.5
 
 
+def test_dynamic_routing_uses_hybrid_for_dependency_queries_even_with_entities():
+    router = RetrievalRouter(enabled=True)
+
+    route = router.route(
+        "How does FastAPI depend on Pydantic for request validation?",
+        {"intent": "FACTUAL", "entities": ["FastAPI", "Pydantic"]},
+    )
+
+    assert route.strategy == "hybrid"
+    assert route.alpha >= 0.75
+
+
 def test_build_context_text_truncates_to_token_budget():
     rag = HybridRAG(vector_store=object(), chat_llm=None, reasoning_llm=None, structured_llm=None, tracer=None)
     docs = [
