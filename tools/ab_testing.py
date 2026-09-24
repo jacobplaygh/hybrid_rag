@@ -46,6 +46,27 @@ def _lexical_overlap_score(query: str, evidence: Sequence[str]) -> float:
 
 def load_dataset(path: str | Path) -> List[Dict[str, Any]]:
     dataset_path = Path(path)
+    candidates: List[Path] = []
+
+    if dataset_path.is_absolute():
+        candidates.append(dataset_path)
+    else:
+        candidates.extend(
+            [
+                dataset_path,
+                Path.cwd() / dataset_path,
+                Path(__file__).resolve().parents[1] / dataset_path,
+                Path(__file__).resolve().parents[2] / dataset_path,
+            ]
+        )
+
+    for candidate in candidates:
+        if candidate.exists():
+            dataset_path = candidate
+            break
+    else:
+        dataset_path = candidates[0]
+
     rows: List[Dict[str, Any]] = []
     with dataset_path.open("r", encoding="utf-8") as handle:
         for line in handle:
