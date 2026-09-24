@@ -34,3 +34,19 @@ def test_graph_rag_returns_entity_neighbors_for_relational_queries():
     assert results
     assert any(item["entity"] == "FastAPI" for item in results) or any(item["entity"] == "LlamaIndex" for item in results)
     assert any("FastAPI" in item["content"] or "LlamaIndex" in item["content"] for item in results)
+
+
+def test_graph_rag_matches_known_entities_case_insensitively_and_keeps_sources():
+    graph = KnowledgeGraph()
+    graph.index_documents([
+        {
+            "id": "doc-1",
+            "content": "fastapi uses llamaindex for document indexing.",
+        }
+    ])
+
+    results = graph.retrieve("How does FastAPI relate to LlamaIndex?", top_k=5)
+
+    fastapi = next(item for item in results if item["entity"] == "FastAPI")
+    assert "LlamaIndex" in fastapi["metadata"]["neighbors"]
+    assert fastapi["metadata"]["document_ids"] == ["doc-1"]

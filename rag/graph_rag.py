@@ -14,6 +14,21 @@ class GraphNode:
 class KnowledgeGraph:
     """Lightweight GraphRAG implementation for entity-centric queries."""
 
+    KNOWN_TERMS = (
+        "FastAPI",
+        "Hybrid RAG",
+        "GraphRAG",
+        "BM25",
+        "LangSmith",
+        "Prometheus",
+        "LlamaIndex",
+        "vector store",
+        "semantic cache",
+        "Reranker",
+        "Context Manager",
+        "Query Understanding",
+    )
+
     def __init__(self):
         self.nodes: Dict[str, GraphNode] = {}
         self.edges: Dict[str, Set[Tuple[str, str]]] = defaultdict(set)
@@ -71,7 +86,11 @@ class KnowledgeGraph:
                 "content": "; ".join(context_parts),
                 "source": entity,
                 "score": 0.8,
-                "metadata": {"graph_rag": True, "neighbors": neighbors},
+                "metadata": {
+                    "graph_rag": True,
+                    "neighbors": neighbors,
+                    "document_ids": sorted(self.nodes[entity].document_ids),
+                },
             })
 
             for neighbor in neighbors:
@@ -89,21 +108,7 @@ class KnowledgeGraph:
             if value and value.lower() not in {"the", "a", "an"}:
                 tokens.append(value)
 
-        known_terms = [
-            "FastAPI",
-            "Hybrid RAG",
-            "GraphRAG",
-            "BM25",
-            "LangSmith",
-            "Prometheus",
-            "LlamaIndex",
-            "vector store",
-            "semantic cache",
-            "Reranker",
-            "Context Manager",
-            "Query Understanding",
-        ]
-        for term in known_terms:
+        for term in self.KNOWN_TERMS:
             if term.lower() in text.lower():
                 tokens.append(term)
 
@@ -118,15 +123,35 @@ class KnowledgeGraph:
 
     def _extract_relations(self, text: str) -> List[Tuple[str, str, str]]:
         relations: List[Tuple[str, str, str]] = []
+        known_entities = sorted(self.KNOWN_TERMS, key=len, reverse=True)
+        known_pattern = "|".join(re.escape(entity) for entity in known_entities)
+        known_relation_pattern = (
+            rf"\b({known_pattern})\b\s+"
+            rf"(?:uses|integrates with|connects to|works with|depends on|builds on|extends)\s+"
+            rf"\b({known_pattern})\b"
+        )
         patterns = [
+            (known_relation_pattern, "related"),
             (r"\b([A-Z][A-Za-z0-9]*(?:\s+[A-Z][A-Za-z0-9]*)*)\s+(?:uses|integrates with|connects to|works with|depends on|builds on|extends)\s+([A-Z][A-Za-z0-9]*(?:\s+[A-Z][A-Za-z0-9]*)*)\b", "related"),
             (r"\b([A-Z][A-Za-z0-9]*(?:\s+[A-Z][A-Za-z0-9]*)*)\s+is\s+powered by\s+([A-Z][A-Za-z0-9]*(?:\s+[A-Z][A-Za-z0-9]*)*)\b", "powered_by"),
             (r"\b([A-Z][A-Za-z0-9]*(?:\s+[A-Z][A-Za-z0-9]*)*)\s+and\s+([A-Z][A-Za-z0-9]*(?:\s+[A-Z][A-Za-z0-9]*)*)\b", "related"),
         ]
 
         for pattern, relation in patterns:
-            for match in re.finditer(pattern, text):
+            flags = re.IGNORECASE if pattern == known_relation_pattern else 0
+            for match in re.finditer(pattern, text, flags=flags):
                 left, right = match.groups()
                 if left and right:
-                    relations.append((left.strip(), right.strip(), relation))
+                    relations.append((
+                        self._canonical_entity(left.strip()),
+                        self._canonical_entity(right.strip()),
+                        relation,
+                    ))
         return relations
+
+    def _canonical_entity(self, value: str) -> str:
+        """Normalize known entities while preserving their display spelling."""
+        for entity in self.KNOWN_TERMS:
+            if entity.lower() == value.lower():
+                return entity
+        return value
