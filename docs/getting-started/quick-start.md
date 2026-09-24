@@ -190,6 +190,8 @@ DELETE /api/documents/{doc_id}    - Delete document
 POST   /api/query                 - Single query
 POST   /api/query/stream          - Streaming response
 POST   /api/query/chat            - Multi-turn chat
+POST   /api/query/workflow        - Bounded search, context selection, and validation
+POST   /api/query/agent           - Explicitly supported constrained agent task
 GET    /api/query/{query_id}      - Get previous query
 ```
 

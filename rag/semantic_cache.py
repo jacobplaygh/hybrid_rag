@@ -26,15 +26,47 @@ class SemanticCache:
         # Store as: { embedding_vector: { "query": str, "response": dict, "timestamp": str } }
         self.cache: Dict[Tuple[float, ...], Dict[str, Any]] = {}
 
+    @staticmethod
+    def _normalize_embedding(embedding: Any) -> Optional[Tuple[float, ...]]:
+        """Convert embedding outputs to a hashable tuple of floats."""
+        if embedding is None:
+            return None
+
+        component_list = []
+
+        def flatten(value: Any):
+            if isinstance(value, np.ndarray):
+                for item in value.tolist():
+                    flatten(item)
+                return
+            if isinstance(value, (list, tuple)):
+                for item in value:
+                    flatten(item)
+                return
+            try:
+                component_list.append(float(value))
+            except (TypeError, ValueError):
+                return
+
+        flatten(embedding)
+        if not component_list:
+            return None
+        return tuple(component_list)
+
     def _get_embedding(self, text: str):
         """Generate embedding for the given text."""
         try:
             # Try common embedding method names
-            for method_name in ["get_embedding", "embed_query", "embed"]:
+            for method_name in [
+                "get_embedding",
+                "get_text_embedding",
+                "embed_query",
+                "embed",
+            ]:
                 method = getattr(self.embedding_model, method_name, None)
                 if callable(method):
                     embedding = method(text)
-                    return tuple(embedding)
+                    return self._normalize_embedding(embedding)
 
             raise AttributeError(f"Embedding model {type(self.embedding_model)} has no compatible embedding method")
         except Exception as exc:
@@ -43,9 +75,12 @@ class SemanticCache:
 
     def _cosine_similarity(self, v1: Tuple[float, ...], v2: Tuple[float, ...]) -> float:
         """Calculate cosine similarity between two vectors."""
-        a = np.array(v1)
-        b = np.array(v2)
-        return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
+        a = np.array(v1, dtype=float)
+        b = np.array(v2, dtype=float)
+        denom = np.linalg.norm(a) * np.linalg.norm(b)
+        if np.isclose(denom, 0.0):
+            return 0.0
+        return float(np.dot(a, b) / denom)
 
     def get(self, query: str) -> Optional[Dict[str, Any]]:
         """
@@ -54,8 +89,11 @@ class SemanticCache:
         Returns:
             The cached response dictionary if a hit is found, else None.
         """
+        if not self.cache:
+            return None
+
         query_emb = self._get_embedding(query)
-        if query_emb is None or not self.cache:
+        if query_emb is None:
             return None
 
         best_sim = -1.0

@@ -82,12 +82,16 @@ HTML_PAGE = """
         <button id="healthButton">Check Health</button>
       </div>
       <div class="full">
-        <h2>Response</h2>
-        <pre id="responseArea">Ready.</pre>
+       <h2>Agentic Loop Status</h2>
+       <pre id="agenticMetadata">No agentic-loop metadata yet.</pre>
       </div>
-    </div>
+     <div class="full">
+       <h2>Response</h2>
+       <pre id="responseArea">Ready.</pre>
+     </div>
+   </div>
   </div>
-
+ 
   <script>
     const apiKeyInput = document.getElementById('apiKey');
     const queryText = document.getElementById('queryText');
@@ -96,6 +100,7 @@ HTML_PAGE = """
     const modelInput = document.getElementById('model');
     const streamToggle = document.getElementById('streamToggle');
     const responseArea = document.getElementById('responseArea');
+    const agenticMetadata = document.getElementById('agenticMetadata');
     const uploadFile = document.getElementById('uploadFile');
 
     function buildHeaders() {
@@ -107,8 +112,57 @@ HTML_PAGE = """
       return headers;
     }
 
+    function renderAgenticLoop(metadata) {
+      if (!metadata || !metadata.agentic_loop) {
+        agenticMetadata.textContent = 'No agentic-loop metadata yet.';
+        return;
+      }
+
+      const loop = metadata.agentic_loop;
+      const details = [
+        `Enabled: ${loop.enabled ? 'yes' : 'no'}`,
+        `Status: ${loop.status || 'unknown'}`,
+        `Iterations: ${loop.iterations ?? 0}`,
+        `Confidence: ${loop.confidence !== null && loop.confidence !== undefined ? Number(loop.confidence).toFixed(3) : 'n/a'}`,
+        `Queries tried: ${Array.isArray(loop.queries_tried) && loop.queries_tried.length ? loop.queries_tried.join(' -> ') : 'none'}`,
+        `Reformulation reasons: ${Array.isArray(loop.reformulation_reasons) && loop.reformulation_reasons.length ? loop.reformulation_reasons.join('; ') : 'none'}`,
+        `Missing aspects: ${Array.isArray(loop.missing_aspects) && loop.missing_aspects.length ? loop.missing_aspects.join('; ') : 'none'}`
+      ];
+      agenticMetadata.textContent = details.join('\n');
+    }
+
     async function renderResult(result) {
-      responseArea.textContent = JSON.stringify(result, null, 2);
+      const payload = result && result.body ? result.body : result;
+      renderAgenticLoop(payload);
+      responseArea.textContent = JSON.stringify(payload, null, 2);
+    }
+
+    function appendStreamContent(content) {
+      const text = String(content ?? '');
+      if (!text) return;
+
+      const previous = responseArea.textContent;
+      const needsSpace = previous && /[A-Za-z0-9]$/.test(previous) && /^[A-Za-z0-9]/.test(text);
+      responseArea.textContent += (needsSpace ? ' ' : '') + text;
+    }
+
+    function appendSsePayload(rawData) {
+      try {
+        const data = JSON.parse(rawData);
+        if (data && data.error) throw new Error(data.error);
+        appendStreamContent(data && data.content !== undefined ? data.content : data);
+      } catch (error) {
+        if (!(error instanceof SyntaxError)) {
+          throw error;
+        }
+        appendStreamContent(rawData);
+      }
+    }
+
+    function processSseLine(line) {
+      if (!line.startsWith('data: ')) return;
+      const rawData = line.substring(6);
+      if (rawData) appendSsePayload(rawData);
     }
 
     async function callQuery() {
@@ -132,18 +186,38 @@ HTML_PAGE = """
         });
 
         if (isStreaming) {
+          if (!res.ok) {
+            const errorBody = await res.text();
+            throw new Error(`HTTP ${res.status}: ${errorBody}`);
+          }
+          if (!res.body) {
+            throw new Error('The browser did not provide a response stream.');
+          }
+
           responseArea.textContent = '';
           responseArea.classList.add('streaming-active');
           const reader = res.body.getReader();
           const decoder = new TextDecoder();
-          while (true) {
-            const { value, done } = await reader.read();
-            if (done) break;
-            const chunk = decoder.decode(value, { stream: true });
-            responseArea.textContent += chunk;
-            responseArea.scrollTop = responseArea.scrollHeight;
+          let buffer = '';
+          try {
+            while (true) {
+              const { value, done } = await reader.read();
+              buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+              const lines = buffer.split(/\\r?\\n/);
+              buffer = lines.pop() || '';
+
+              for (const line of lines) {
+                processSseLine(line);
+                responseArea.scrollTop = responseArea.scrollHeight;
+              }
+
+              if (done) break;
+            }
+
+            processSseLine(buffer.trim());
+          } finally {
+            responseArea.classList.remove('streaming-active');
           }
-          responseArea.classList.remove('streaming-active');
         } else {
           const body = await res.json();
           await renderResult({ status: res.status, body });
@@ -209,4 +283,7 @@ HTML_PAGE = """
 
 @router.get("/ui", response_class=HTMLResponse, tags=["UI"])
 async def ui_page():
-    return HTMLResponse(content=HTML_PAGE)
+  return HTMLResponse(
+    content=HTML_PAGE,
+    headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
+  )

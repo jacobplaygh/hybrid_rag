@@ -30,15 +30,14 @@ class Settings(BaseSettings):
     NVIDIA_API_KEY: Optional[str] = os.getenv("NVIDIA_API_KEY")
     NVIDIA_EMBEDDING_MODEL: str = os.getenv("NVIDIA_EMBEDDING_MODEL", "nvidia/nv-embedqa-e5-v5")
     NVIDIA_CHAT_MODELS: list = [
-        "meta/llama-3.1-70b-instruct",
-        "meta/llama-3.1-8b-instruct",
+        "meta/llama3-8b-instruct",
     ]
     # Allow overriding the default chat model via environment.
     # Prefer DEFAULT_CHAT_MODEL, but fall back to NVIDIA_MODEL for compatibility.
-    DEFAULT_CHAT_MODEL: str = os.getenv("DEFAULT_CHAT_MODEL") or os.getenv("NVIDIA_MODEL") or "meta/llama-3.1-70b-instruct"
+    DEFAULT_CHAT_MODEL: str = os.getenv("DEFAULT_CHAT_MODEL") or os.getenv("NVIDIA_MODEL") or "meta/llama3-8b-instruct"
 
     # Separate model for lightweight reranking. Defaults to the main chat model if unset.
-    RERANK_MODEL: str = os.getenv("RERANK_MODEL") or os.getenv("DEFAULT_CHAT_MODEL") or os.getenv("NVIDIA_MODEL") or "meta/llama-3.1-8b-instruct"
+    RERANK_MODEL: str = os.getenv("RERANK_MODEL") or os.getenv("DEFAULT_CHAT_MODEL") or os.getenv("NVIDIA_MODEL") or "meta/llama3-8b-instruct"
 
     # NVIDIA_MODEL is retained for compatibility and used as a fallback.
     NVIDIA_MODEL: Optional[str] = os.getenv("NVIDIA_MODEL")
@@ -65,8 +64,9 @@ class Settings(BaseSettings):
     MAX_CONTEXT_TOKENS: int = int(os.getenv("MAX_CONTEXT_TOKENS", 80000))
     
     # Retrieval
-    RETRIEVAL_K: int = int(os.getenv("RETRIEVAL_K", 3))
+    RETRIEVAL_K: int = int(os.getenv("RETRIEVAL_K", 10))
     RETRIEVAL_RERANK: bool = os.getenv("RETRIEVAL_RERANK", "True").lower() == "true"
+    DYNAMIC_ROUTING_ENABLED: bool = os.getenv("DYNAMIC_ROUTING_ENABLED", "True").lower() == "true"
     
     # LangSmith (Observability)
     LANGSMITH_SMITH_API_URL: str = os.getenv("LANGSMITH_API_URL", "https://apac.api.smith.langchain.com")
@@ -77,6 +77,19 @@ class Settings(BaseSettings):
     # Semantic Cache
     SEMANTIC_CACHE_ENABLED: bool = os.getenv("SEMANTIC_CACHE_ENABLED", "True").lower() == "true"
     SEMANTIC_CACHE_THRESHOLD: float = float(os.getenv("SEMANTIC_CACHE_THRESHOLD", "0.9"))
+
+    # Agentic Loop
+    AGENTIC_LOOP_ENABLED: bool = os.getenv("AGENTIC_LOOP_ENABLED", "True").lower() == "true"
+    AGENTIC_MAX_RETRIES: int = int(os.getenv("AGENTIC_MAX_RETRIES", 3))
+    AGENTIC_CONFIDENCE_THRESHOLD: float = float(os.getenv("AGENTIC_CONFIDENCE_THRESHOLD", "0.55"))
+    AGENTIC_REFORMULATION_STRATEGY: str = os.getenv("AGENTIC_REFORMULATION_STRATEGY", "auto")
+    AGENTIC_TIMEOUT_SECONDS: int = int(os.getenv("AGENTIC_TIMEOUT_SECONDS", 30))
+
+    # Corrective RAG (CRAG)
+    CRAG_ENABLED: bool = os.getenv("CRAG_ENABLED", "True").lower() == "true"
+    CRAG_CONFIDENCE_THRESHOLD: float = float(os.getenv("CRAG_CONFIDENCE_THRESHOLD", "0.55"))
+    CRAG_MAX_FALLBACKS: int = int(os.getenv("CRAG_MAX_FALLBACKS", 2))
+    CRAG_EXPAND_QUERY: bool = os.getenv("CRAG_EXPAND_QUERY", "True").lower() == "true"
     
     # Auth & Security
     AUTH_REQUIRED: bool = os.getenv("AUTH_REQUIRED", "False").lower() == "true"

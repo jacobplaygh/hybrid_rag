@@ -1,5 +1,6 @@
 """Advanced retrieval with semantic + keyword search."""
 
+import asyncio
 import json
 import logging
 from typing import List, Dict, Any, Optional
@@ -164,7 +165,7 @@ class HybridRetriever:
         
         try:
             query_tokens = query.lower().split()
-            scores = self.bm25.get_scores(query_tokens)
+            scores = await asyncio.to_thread(self.bm25.get_scores, query_tokens)
             
             # Get top-k indices
             ranked_indices = sorted(
@@ -242,10 +243,10 @@ class HybridRetriever:
 
         try:
             prompt_docs = []
-            for idx, doc in enumerate(results[:top_k]):
+            for idx, doc in enumerate(results[:top_k * 2]):
                 snippet = doc.content.replace("\n", " ")
-                if len(snippet) > 300:
-                    snippet = snippet[:297] + "..."
+                if len(snippet) > 1000:
+                    snippet = snippet[:997] + "..."
                 prompt_docs.append(
                     f"{idx+1}. id={doc.doc_id} score={doc.score:.2f}\n{snippet}\n"
                 )

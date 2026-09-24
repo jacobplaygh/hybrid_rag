@@ -4,7 +4,7 @@ This directory contains the strategic and technical roadmap for improving the Hy
 
 ## 📖 Documents
 
-Three comprehensive documents guide the improvement plan:
+The improvement roadmap is documented in the strategic and technical plans below. The active implementation handoff is tracked separately in the context-engineering plan.
 
 ### 1. **Improvement Plan** (Strategic)
 **File:** [IMPROVEMENT_PLAN.md](../../IMPROVEMENT_PLAN.md)  
@@ -55,6 +55,11 @@ Three comprehensive documents guide the improvement plan:
 - FAQ and sign-off template
 - Metrics to track from day 1
 
+### 4. **Context Engineering Plan** (Active Implementation)
+**File:** [context-engineering-plan.md](./context-engineering-plan.md)
+**Purpose:** Current slice status, implementation decisions, tests, and remaining risks
+**Current status:** Phase 5 has a caller-facing constrained workflow service and API boundary.
+
 **Read if you want to:**
 - Quick overview of improvements
 - Decide which implementation approach to use
@@ -81,6 +86,9 @@ Three comprehensive documents guide the improvement plan:
 
 ### Get started today
 → Start with [Improvement Summary](../../IMPROVEMENT_SUMMARY.md) then read Implementation Roadmap
+
+### Continue the active implementation
+→ Read the [Context Engineering Plan](./context-engineering-plan.md)
 
 ---
 

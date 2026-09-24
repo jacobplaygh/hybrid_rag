@@ -1,9 +1,13 @@
 """Hybrid RAG orchestrator combining LangChain + LlamaIndex."""
 
+import asyncio
 import copy
+import inspect
 import logging
 import re
+import time
 import uuid
+from types import SimpleNamespace
 from typing import List, Optional, Dict, Any
 from datetime import datetime, timezone
 from rag.reranker import CrossEncoderReranker
@@ -12,11 +16,19 @@ from rag.quality_metrics import QualityMetricsCalculator
 from rag.query_understanding import QueryUnderstanding
 from rag.chains import create_chains, QueryDecomposerChain
 from rag.retrieval import HybridRetriever
+from rag.retrieval_router import RetrievalRouter
+from rag.graph_rag import KnowledgeGraph
 from rag.memory import ConversationMemory
 from rag.semantic_cache import SemanticCache
 from rag.context_manager import ContextManager
 from rag.response_validator import ResponseValidator
 from rag.analytics import QueryAnalytics
+from rag.agentic_loop import (
+    AgenticRetrieverLoop,
+    AgenticLoopConfig,
+    ContextSufficiencyEvaluator,
+    QueryReformulator,
+)
 
 DEFAULT_MAX_CONTEXT_TOKENS = 120000
 
@@ -26,6 +38,7 @@ try:
 except ImportError:
     HAS_LANGCHAIN = False
 
+from rag.constrained_tools import ConstrainedToolExecutor, WorkflowPolicy
 from api.config import get_settings
 from observability.metrics import (
     query_counter, 
@@ -80,8 +93,11 @@ class HybridRAG:
         self.metrics_calculator = QualityMetricsCalculator()
         self.query_understanding = QueryUnderstanding(chat_llm) if chat_llm else None
 
-        # Initialize Context Manager
         settings = get_settings()
+        self.retrieval_router = RetrievalRouter(enabled=getattr(settings, "DYNAMIC_ROUTING_ENABLED", True))
+        self.graph_rag = KnowledgeGraph()
+
+        # Initialize Context Manager
         self.context_manager = ContextManager(
             max_tokens=getattr(settings, "MAX_CONTEXT_TOKENS", DEFAULT_MAX_CONTEXT_TOKENS)
         )
@@ -92,9 +108,104 @@ class HybridRAG:
         # Initialize Analytics
         self.analytics = QueryAnalytics()
 
-        # Initialize Semantic Cache
-        self.semantic_cache = None
+        # Initialize local caches and history before query execution.
+        self.query_history: Dict[str, Dict[str, Any]] = {}
+        self.query_cache: Dict[str, Dict[str, Any]] = {}
+
+        # Initialize retrieval components early so they are available to the entire pipeline.
+        self.retriever = None
+        reranker_model = None
+        if HAS_LANGCHAIN and settings.RETRIEVAL_RERANK:
+            reranker_model = ChatNVIDIA(model=settings.RERANK_MODEL)
+        self.retriever = HybridRetriever(
+            vector_store,
+            use_reranker=settings.RETRIEVAL_RERANK,
+            reranker=reranker_model,
+        )
+
+        self.agentic_loop = None
+        if settings.AGENTIC_LOOP_ENABLED:
+            self.agentic_loop = AgenticRetrieverLoop(
+                retriever=self.retriever,
+                confidence_scorer=self.confidence_scorer,
+                evaluator=ContextSufficiencyEvaluator(self.confidence_scorer),
+                reformulator=QueryReformulator(llm=chat_llm if HAS_LANGCHAIN else None, use_llm=bool(chat_llm)),
+                config=AgenticLoopConfig(
+                    max_retries=settings.AGENTIC_MAX_RETRIES,
+                    confidence_threshold=settings.AGENTIC_CONFIDENCE_THRESHOLD,
+                    retry_strategy=settings.AGENTIC_REFORMULATION_STRATEGY,
+                    timeout_seconds=settings.AGENTIC_TIMEOUT_SECONDS,
+                ),
+            )
+            logger.info("🔁 Agentic retrieval loop enabled")
+        
         if settings.SEMANTIC_CACHE_ENABLED:
+            # Use the vector store's embedding function for the semantic cache
+            embedding_model = getattr(self.vector_store, "embedding_fn", None)
+            if embedding_model:
+                self.semantic_cache = SemanticCache(embedding_model=embedding_model)
+            else:
+                logger.warning("Semantic cache enabled but no embedding model found in vector store")
+                self.semantic_cache = None
+
+    def register_graph_documents(self, documents: List[Any]) -> None:
+        """Index a document set in the lightweight knowledge graph."""
+        if self.graph_rag:
+            self.graph_rag.index_documents(documents)
+
+    async def execute_constrained_query(self, query: str, policy: WorkflowPolicy) -> Dict[str, Any]:
+        """
+        Executes a query using a constrained tool executor to enforce budget and policy.
+        """
+        # This is a simplified implementation for evaluation purposes.
+        # In a full implementation, this would integrate with the ConstrainedWorkflowAgent.
+        
+        tools = {
+            "document_search": self.vector_store.search,
+        }
+        
+        executor = ConstrainedToolExecutor.from_policy(tools, policy)
+        
+        start_time = time.perf_counter()
+        try:
+            # Simulate the agent loop: 
+            # 1. Understand query -> 2. Call tools (constrained) -> 3. Generate response
+            
+            # Step 1: Query Understanding
+            query_plan = await self.query_understanding.analyze(query) if self.query_understanding else {"plan": ["document_search"]}
+            
+            # Step 2: Constrained Tool Execution
+            context_fragments = []
+            for tool_name in query_plan.get("plan", ["document_search"]):
+                # We wrap the tool call in the executor
+                result = await executor.execute(tool_name, query)
+                context_fragments.append(result)
+            
+            # Step 3: Final Response Generation (Simulated for eval)
+            # In reality, this would call the LLM with the gathered context
+            response = f"Generated response based on {len(context_fragments)} tool calls."
+            
+            # Validation
+            validation_result = await self.validator.validate(response, query)
+            
+            return {
+                "response": response,
+                "tokens_used": executor.current_tokens,
+                "tool_calls": executor.call_count,
+                "is_valid": validation_result.get("is_valid", True),
+                "score": validation_result.get("score", 1.0)
+            }
+            
+            logger.error(f"Constrained execution failed: {e}")
+        finally:
+            latency = time.perf_counter() - start_time
+            self.analytics.log_query({
+                "query": query,
+                "response_time_ms": latency * 1000,
+                "tool_calls": executor.call_count,
+                "status": "success" if 'response' in locals() else "error"
+            })
+
             # Use the vector store's embedding capability if available, 
             # or a dedicated embedding model. For now, we pass the vector_store
             # as it typically handles the embedding logic.
@@ -122,6 +233,27 @@ class HybridRAG:
         else:
             logger.info("🚀 Initialized Hybrid RAG System")
     
+    async def query_stream(self, request: Any):
+        """
+        Wrapper for the query method to support streaming from the API.
+        Unpacks QueryRequest and calls query(stream=True).
+        """
+        # Handle both Pydantic models and dicts
+        if hasattr(request, "dict"):
+            req_dict = request.dict()
+        elif isinstance(request, dict):
+            req_dict = request
+        else:
+            req_dict = vars(request)
+
+        return await self.query(
+            query=req_dict.get("query"),
+            mode=req_dict.get("mode", "simple"),
+            top_k=req_dict.get("top_k", 5),
+            model=req_dict.get("model"),
+            stream=True
+        )
+
     async def ensure_keyword_index(self):
         """Ensure BM25 keyword index is initialized for hybrid retrieval."""
         if self.retriever.bm25 is not None:
@@ -143,6 +275,135 @@ class HybridRAG:
         except Exception as exc:
             logger.warning(f"Keyword index initialization failed: {exc}")
 
+    def _doc_to_confidence_payload(self, doc: Any) -> Dict[str, Any]:
+        """Normalize retrieved docs into a dict structure for confidence scoring."""
+        if isinstance(doc, dict):
+            payload = dict(doc)
+        elif hasattr(doc, "to_dict"):
+            payload = doc.to_dict()
+        else:
+            payload = {
+                "content": getattr(doc, "content", ""),
+                "source": getattr(doc, "source", "unknown"),
+                "score": getattr(doc, "score", 0.0),
+            }
+
+        if "relevance_score" not in payload and "score" in payload:
+            payload["relevance_score"] = float(payload.get("score", 0.0))
+        return payload
+
+    def _retrieval_confidence(self, documents: List[Any]) -> float:
+        """Estimate retrieval confidence for a document set."""
+        if not documents:
+            return 0.0
+
+        payload = [self._doc_to_confidence_payload(doc) for doc in documents]
+        # We pass an empty string as response because we are scoring the retrieval phase, not the generation phase
+        score = self.confidence_scorer.score_response(payload, "")
+        
+        # In retrieval phase, we primarily care about relevance and source quality
+        # We weight these more heavily than the LLM confidence (which will be 0.7 default for empty response)
+        retrieval_conf = (score.relevance_score * 0.6) + (score.source_quality * 0.4)
+        
+        return float(retrieval_conf)
+
+    def _build_corrective_queries(self, query: str, analysis: Optional[Dict[str, Any]] = None) -> List[str]:
+        """Generate alternative retrieval queries for corrective fallback."""
+        candidate_queries = [query.strip()]
+        analysis = analysis or {}
+
+        entities = [entity for entity in (analysis.get("entities") or []) if isinstance(entity, str) and entity.strip()]
+        if entities:
+            candidate_queries.append(" ".join(entities))
+            candidate_queries.extend(f"{entity} details" for entity in entities[:3])
+
+        tokens = re.findall(r"[A-Za-z0-9][A-Za-z0-9.-]{2,}", query)
+        if tokens:
+            candidate_queries.append(" ".join(tokens[:5]))
+
+        if " " in query:
+            candidate_queries.append(f"{query} overview")
+            candidate_queries.append(f"{query} explain")
+
+        deduped: List[str] = []
+        seen = set()
+        for candidate in candidate_queries:
+            normalized = candidate.strip()
+            if normalized and normalized.lower() not in seen:
+                deduped.append(normalized)
+                seen.add(normalized.lower())
+        return deduped[:5]
+
+    async def _apply_corrective_retrieval(
+        self,
+        query: str,
+        context_docs: List[Any],
+        analysis: Optional[Dict[str, Any]] = None,
+        top_k: int = 5,
+        retrieval_alpha: float = 0.7,
+    ) -> tuple[List[Any], Dict[str, Any]]:
+        """Trigger corrective fallback retrieval when the initial context is under-confident."""
+        settings = get_settings()
+        if not getattr(settings, "CRAG_ENABLED", True):
+            return context_docs, {"triggered": False, "confidence": self._retrieval_confidence(context_docs), "queries_tried": []}
+
+        current_confidence = self._retrieval_confidence(context_docs)
+        threshold = float(getattr(settings, "CRAG_CONFIDENCE_THRESHOLD", 0.55))
+        if current_confidence >= threshold and len(context_docs) > 0:
+            return context_docs, {"triggered": False, "confidence": current_confidence, "queries_tried": []}
+
+        fallback_queries = self._build_corrective_queries(query, analysis)
+        fallback_docs: List[Any] = []
+        queries_tried: List[str] = []
+        max_fallbacks = int(getattr(settings, "CRAG_MAX_FALLBACKS", 2))
+
+        for fallback_query in fallback_queries[1:][:max_fallbacks + 1]:
+            queries_tried.append(fallback_query)
+            docs, _ = await self.retriever.retrieve(
+                fallback_query,
+                top_k=max(top_k, 3),
+                alpha=max(0.2, min(1.0, retrieval_alpha * 0.8)),
+            )
+            if self.reranker:
+                reranked = self.reranker.rerank(fallback_query, docs, top_k=top_k)
+                if reranked is not None:
+                    docs = reranked
+            fallback_docs.extend(docs)
+
+            if self._retrieval_confidence(fallback_docs) >= threshold:
+                break
+
+        if not fallback_docs:
+            return context_docs, {"triggered": False, "confidence": current_confidence, "queries_tried": queries_tried}
+
+        deduped_fallback: List[Any] = []
+        seen_ids = set()
+        for doc in fallback_docs:
+            key = None
+            if isinstance(doc, dict):
+                key = doc.get("doc_id") or doc.get("source") or doc.get("content", "")
+            else:
+                key = getattr(doc, "doc_id", None) or getattr(doc, "source", "") or getattr(doc, "content", "")
+            if key and key in seen_ids:
+                continue
+            deduped_fallback.append(doc)
+            seen_ids.add(key)
+
+        deduped_fallback.sort(
+            key=lambda doc: float(self._doc_to_confidence_payload(doc).get("relevance_score", self._doc_to_confidence_payload(doc).get("score", 0.0))),
+            reverse=True,
+        )
+
+        updated_confidence = self._retrieval_confidence(deduped_fallback)
+        triggered = updated_confidence > current_confidence or len(deduped_fallback) > len(context_docs)
+        return (deduped_fallback if triggered else context_docs), {
+            "triggered": triggered,
+            "confidence": updated_confidence,
+            "queries_tried": queries_tried,
+            "original_confidence": current_confidence,
+            "fallback_threshold": threshold,
+        }
+
     async def query(
         self,
         query: str,
@@ -155,6 +416,7 @@ class HybridRAG:
         Execute the Hybrid RAG pipeline.
         If stream=True, returns an async generator of chunks.
         """
+        settings = get_settings()
         query_id = str(uuid.uuid4())
         query_start_time = datetime.now(timezone.utc)
         
@@ -165,7 +427,7 @@ class HybridRAG:
         # 1. Try Semantic Cache first
         cache_status = "MISS"
         if self.semantic_cache:
-            cached_result = self.semantic_cache.get(query)
+            cached_result = await asyncio.to_thread(self.semantic_cache.get, query)
             if cached_result:
                 logger.info("♻️ Semantic cache hit!")
                 cache_status = "HIT"
@@ -251,8 +513,9 @@ class HybridRAG:
             await self.ensure_keyword_index()
             
             # --- Query Understanding Phase ---
+            # Skip query understanding for streaming simple queries to reduce latency
             analysis = {"intent": "FACTUAL", "entities": [], "sub_queries": []}
-            if self.query_understanding:
+            if self.query_understanding and not (stream and mode == "simple"):
                 analysis = await self.query_understanding.analyze(query)
                 logger.info(f"🧠 Query Analysis: Intent={analysis['intent']}, Entities={analysis['entities']}")
 
@@ -260,6 +523,18 @@ class HybridRAG:
             if analysis.get("intent") == "COMPLEX" and mode == "simple":
                 logger.info("🔄 Auto-switching to 'decompose' mode due to COMPLEX intent")
                 mode = "decompose"
+
+            routing = self.retrieval_router.route(query, analysis) if self.retrieval_router else None
+            retrieval_alpha = getattr(routing, "alpha", 0.7)
+            retrieval_strategy = getattr(routing, "strategy", "hybrid")
+            retrieval_reason = getattr(routing, "reason", "default retrieval policy")
+            if routing:
+                logger.info(
+                    "🧭 Retrieval route selected: strategy=%s, alpha=%.2f, reason=%s",
+                    retrieval_strategy,
+                    retrieval_alpha,
+                    retrieval_reason,
+                )
             # ---------------------------------
 
             retrieval_id = None
@@ -310,15 +585,78 @@ class HybridRAG:
                 context_docs = unique_docs
             else:
                 # Standard retrieval flow
-                context_docs, retrieval_id = await self.retriever.retrieve(
-                    query,
-                    top_k=top_k * 5,  # Retrieve more for reranking
-                    alpha=0.7,  # 70% semantic, 30% keyword
-                )
+                context_docs = []
+                retrieval_id = None
+                agentic_loop_result = None
                 
-                # Rerank results to improve precision
-                reranked_docs = self.reranker.rerank(query, context_docs, top_k=top_k)
-                context_docs = reranked_docs if reranked_docs is not None else []
+                if self.agentic_loop and settings.AGENTIC_LOOP_ENABLED and not (mode == "decompose"):
+                    agentic_loop_result = await self.agentic_loop.retrieve_with_retry(
+                        query=query,
+                        top_k=top_k,
+                        query_decomposition=analysis.get("sub_queries") or None,
+                    )
+                    # Agentic loop returns docs as dicts, we need to ensure they are compatible with the rest of the pipeline
+                    # The loop already handles the retrieval and reranking internally via self.retriever
+                    context_docs = agentic_loop_result.get("documents", [])
+                    retrieval_id = f"agentic-{query_id}"
+                    logger.info(
+                        "🔁 Agentic loop retrieval complete: status=%s, confidence=%.2f, iterations=%s",
+                        agentic_loop_result.get("final_status"),
+                        agentic_loop_result.get("confidence", 0.0),
+                        agentic_loop_result.get("iterations", 0),
+                    )
+                else:
+                    # Fallback to standard hybrid retrieval
+                    retrieval_start_time = time.time()
+                    retrieval_result = await self.retriever.retrieve(
+                        query, 
+                        top_k=top_k, 
+                        alpha=retrieval_alpha
+                    )
+                    
+                    if isinstance(retrieval_result, tuple):
+                        context_docs = retrieval_result[0]
+                    else:
+                        context_docs = retrieval_result
+                        
+                    if self.reranker:
+                        reranked = self.reranker.rerank(query, context_docs, top_k=top_k)
+                        context_docs = reranked if reranked is not None else context_docs
+                    
+                    retrieval_id = f"hybrid-{query_id}"
+                    logger.info(f"🔍 Standard retrieval complete: {len(context_docs)} docs retrieved")
+                    context_docs, retrieval_id = await self.retriever.retrieve(
+                        query,
+                        top_k=top_k * 5 if not (stream and mode == "simple") else top_k,
+                        alpha=retrieval_alpha,
+                    )
+
+                    if not (stream and mode == "simple"):
+                        reranked_docs = self.reranker.rerank(query, context_docs, top_k=top_k)
+                        context_docs = reranked_docs if reranked_docs is not None else []
+                    else:
+                        context_docs = context_docs[:top_k]
+
+                graph_trigger = analysis.get("intent") in {"COMPLEX", "COMPARATIVE"} or any(
+                    token in query.lower() for token in ["related", "depends on", "connects to", "compares", "versus"]
+                )
+                if self.graph_rag and graph_trigger:
+                    graph_results = self.graph_rag.retrieve(query, top_k=top_k)
+                    if graph_results:
+                        for result in graph_results:
+                            graph_doc = SimpleNamespace(
+                                content=result["content"],
+                                source=result["source"],
+                                score=result["score"],
+                                metadata=result.get("metadata", {}),
+                            )
+                            graph_doc.to_dict = lambda r=result: {
+                                "content": r["content"],
+                                "source": r["source"],
+                                "score": r["score"],
+                                "metadata": r.get("metadata", {}),
+                            }
+                            context_docs.append(graph_doc)
             
             retrieval_end = datetime.now(timezone.utc)
             retrieval_time_ms = (retrieval_end - retrieval_start).total_seconds() * 1000
@@ -326,11 +664,20 @@ class HybridRAG:
                 retrieval_latency.observe(retrieval_time_ms / 1000.0)
             
             # Use the new context manager for token budgeting
-            history = self.memory.get_history(query_id) if hasattr(self.memory, 'get_history') else None
+            history = None
+            if mode == "multi-turn":
+                history = self.memory.get_relevant_context("default_session", query=query)
             context_docs = self.context_manager.truncate_context(
                 context_docs=context_docs,
                 query=query,
                 history=history
+            )
+            context_docs, crag_metadata = await self._apply_corrective_retrieval(
+                query=query,
+                context_docs=context_docs,
+                analysis=analysis,
+                top_k=top_k,
+                retrieval_alpha=retrieval_alpha,
             )
             context_text = self._build_context_text(context_docs, query)
             
@@ -352,7 +699,14 @@ class HybridRAG:
                         response = await self._simple_rag(query, context_text, llm)
                 elif mode == "multi-turn":
                     if stream:
-                        response = self.chains["multi_turn"].astream(query, context_text)
+                        history = self.memory.get_relevant_context(
+                            "default_session", query=query
+                        )
+                        response = self.chains["multi_turn"].astream(
+                            query=query,
+                            history=history,
+                            context=context_text,
+                        )
                     else:
                         response = await self._multi_turn_chat(query, context_text, llm)
                 elif mode == "decompose":
@@ -477,7 +831,22 @@ class HybridRAG:
                 "quality_metrics": quality,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "model_used": llm.model if hasattr(llm, 'model') else "unknown",
+                "retrieval_strategy": retrieval_strategy,
+                "retrieval_alpha": retrieval_alpha,
+                "retrieval_reason": retrieval_reason,
+                "corrective_retrieval": crag_metadata,
+                "agentic_loop": None,
             }
+            if agentic_loop_result:
+                result["agentic_loop"] = {
+                    "enabled": True,
+                    "status": agentic_loop_result.get("final_status"),
+                    "confidence": agentic_loop_result.get("confidence"),
+                    "iterations": agentic_loop_result.get("iterations", 0),
+                    "queries_tried": agentic_loop_result.get("queries_tried", []),
+                    "reformulation_reasons": agentic_loop_result.get("reformulation_reasons", []),
+                    "missing_aspects": agentic_loop_result.get("missing_aspects", []),
+                }
 
             if stream:
                 return self._stream_response(response, result)
@@ -486,7 +855,6 @@ class HybridRAG:
             self.query_history[query_id] = result
             
             if self.tracer:
-                # ...existing code...
                 self.tracer.trace_llm_call(
                     model=llm.model if hasattr(llm, 'model') else "unknown",
                     prompt=prompt_text,
@@ -557,77 +925,50 @@ class HybridRAG:
         is handled and the final response is cached/logged.
         """
         full_response = []
-        async for chunk in response_generator:
+        stream_start = time.perf_counter()
+        first_chunk_time = None
+        async for chunk in self._iter_stream_chunks(response_generator):
+            if first_chunk_time is None:
+                first_chunk_time = (time.perf_counter() - stream_start) * 1000
             full_response.append(chunk)
             yield chunk
         
-        final_text = "".join(full_response)
-        
         # Update metadata with the actual full response
-        result_metadata["response"] = final_text
-        
-        # --- Deferred Metrics and Analytics ---
-        mode = result_metadata["mode"]
-        query_id = result_metadata["query_id"]
-        query_duration_ms = result_metadata["query_time_ms"]
-        tokens_used_val = result_metadata["tokens_used"]
-        confidence = result_metadata["confidence_score"]
-        quality = result_metadata["quality_metrics"]
-        
-        # Log to Analytics
-        try:
+        result_metadata["response"] = "".join(full_response)
+        result_metadata["first_token_time_ms"] = first_chunk_time or 0.0
+        result_metadata["stream_duration_ms"] = (time.perf_counter() - stream_start) * 1000
+        if hasattr(self, "analytics"):
             self.analytics.log_query({
-                "query_id": query_id,
-                "query": result_metadata["query"],
-                "mode": mode,
-                "intent": "STREAMED", # Simplified for deferred log
-                "response_time_ms": query_duration_ms,
-                "tokens_used": tokens_used_val,
-                "cache_status": "MISS",
-                "confidence_score": confidence.overall_score if (confidence and hasattr(confidence, 'overall_score')) else (confidence if confidence else 0.0),
-                "status": "success"
+                **result_metadata,
+                "response_time_ms": result_metadata["stream_duration_ms"],
+                "cache_status": result_metadata.get("cache_status", "MISS"),
+                "status": "success",
             })
-        except Exception as e:
-            logger.warning(f"Deferred analytics logging failed: {e}")
 
-        # Record to Prometheus
-        try:
-            # We need to access the gauges from the class instance
-            # Assuming these are initialized in __init__ as self.ndcg_gauge, etc.
-            if hasattr(self, 'ndcg_gauge') and self.ndcg_gauge:
-                self.ndcg_gauge.labels(mode=mode).set(quality)
-            if hasattr(self, 'confidence_gauge') and self.confidence_gauge and confidence:
-                confidence_val = confidence.overall_score if hasattr(confidence, 'overall_score') else confidence
-                self.confidence_gauge.labels(mode=mode).set(confidence_val)
-        except Exception as e:
-            logger.warning(f"Deferred Prometheus update failed: {e}")
-        # ---------------------------------------
+    async def _iter_stream_chunks(self, stream):
+        """Flatten nested async streams and normalize message chunks to text."""
+        async for chunk in stream:
+            if inspect.isasyncgen(chunk) or hasattr(chunk, "__aiter__"):
+                async for nested_chunk in self._iter_stream_chunks(chunk):
+                    yield nested_chunk
+                continue
 
-        # Store in history and cache
-        query_id = result_metadata["query_id"]
-        self.query_history[query_id] = result_metadata
+            content = getattr(chunk, "content", chunk)
+            if content is not None:
+                yield str(content)
+
+    def _wrap_chat_stream(self, response, result_metadata, session_id):
+        """
+        Returns an async generator that wraps _stream_response and updates memory upon completion.
+        """
+        async def generator():
+            async for chunk in self._stream_response(response, result_metadata):
+                yield chunk
+            
+            # After stream completes, add the full response to memory
+            self.memory.add_message(session_id, "assistant", result_metadata["response"])
         
-        # Cache if applicable
-        if self._should_cache(mode):
-            cache_key = self._build_cache_key(
-                result_metadata["query"], 
-                mode, 
-                result_metadata.get("top_k", 5), 
-                result_metadata["model_used"]
-            )
-            self.query_cache[cache_key] = {
-                "query": result_metadata["query"],
-                "response": final_text,
-                "mode": mode,
-                "retrieved_docs": result_metadata["retrieved_docs"],
-                "model_used": result_metadata["model_used"],
-                "query_time_ms": result_metadata["query_time_ms"],
-                "tokens_used": result_metadata["tokens_used"],
-                "timestamp": result_metadata["timestamp"],
-                "retrieval_id": result_metadata["retrieval_id"],
-            }
-            if self.semantic_cache:
-                self.semantic_cache.set(result_metadata["query"], result_metadata)
+        return generator()
 
     async def chat(
         self,
@@ -649,7 +990,7 @@ class HybridRAG:
             await self.ensure_keyword_index()
             
             # Get conversation history
-            history = self.memory.get_context(session_id)
+            history = self.memory.get_relevant_context(session_id, query=message)
 
             # Retrieve context
             context_docs, retrieval_id = await self.retriever.retrieve(
@@ -735,13 +1076,7 @@ class HybridRAG:
                 }
                 
                 # Wrap the stream to handle memory update and metrics
-                async def chat_stream_wrapper():
-                    async for chunk in self._stream_response(response, result_metadata):
-                        yield chunk
-                    # After stream completes, add the full response to memory
-                    self.memory.add_message(session_id, "assistant", result_metadata["response"])
-                
-                return chat_stream_wrapper()
+                return self._wrap_chat_stream(response, result_metadata, session_id)
 
             logger.info(f"✅ Chat completed in {chat_time:.1f}ms")
 
@@ -920,7 +1255,7 @@ class HybridRAG:
     
     async def _multi_turn_chat(self, query: str, context: str, llm, session_id: str = "default_session") -> str:
         """Multi-turn chat response."""
-        history = self.memory.get_context(session_id)
+        history = self.memory.get_relevant_context(session_id, query=query)
         response = await self.chains["multi_turn"].invoke(
             query=query,
             history=history,

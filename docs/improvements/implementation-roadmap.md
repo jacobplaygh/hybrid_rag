@@ -15,14 +15,21 @@ Detailed technical implementation guide for the Hybrid RAG system improvements.
 - **Query Understanding**: ✅ Implemented in `rag/query_understanding.py`.
 - **Semantic Caching**: ✅ Implemented in `rag/semantic_cache.py`.
 
-### Phase 3: Production 🏗️ In Progress
+### Phase 3: Production ✅ Completed
 - **Context Window Management**: Token budgeting and truncation strategies.
 - **Response Validation**: Hallucination detection and sanitization.
 - **Streaming**: FastAPI streaming responses for better UX.
 
-### Phase 4: Analytics 📅 Planned
-- **Observability Dashboard**: Integration with Prometheus/Grafana.
-- **Query Analytics**: Logging and analyzing query patterns.
+### Phase 4: Advanced Retrieval ✅ Implemented
+- **Agentic Retrieval**: Iterative retrieval with confidence-based reformulation.
+- **Dynamic Routing**: Query-adaptive vector, keyword, and hybrid selection.
+- **GraphRAG**: Entity relationship retrieval with source provenance.
+- **Corrective RAG**: Low-confidence fallback retrieval.
 
-## 🚀 Next Technical Milestone: Phase 3.1 Context Window Management
-The goal is to ensure the system handles large documents and long conversations without exceeding the LLM's context limit.
+### Phase 5: Rollout and Evaluation 🏗️ In Progress
+- **A/B Evaluation**: Baseline versus agentic quality and latency comparison.
+- **Release Gate**: Require no success-rate, groundedness, or context-relevance regression.
+- **GraphRAG Hardening**: Expand multi-hop coverage and entity extraction quality.
+
+## 🚀 Next Technical Milestone: Phase 5.1 Rollout Gate
+The immediate goal is to improve evaluation coverage and keep agentic retrieval configurable until it matches or exceeds the baseline on success rate, groundedness, and context relevance.

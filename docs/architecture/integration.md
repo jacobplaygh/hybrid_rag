@@ -28,6 +28,47 @@ print(f"Confidence: {result['confidence']}")
 print(f"Sources: {[s['filename'] for s in result['sources']]}")
 ```
 
+### Constrained Workflow
+
+Use the bounded workflow when a caller has a draft response and needs retrieval, context selection, and validation under the configured tool policy:
+
+```python
+response = requests.post(
+    f"{RAG_URL}/api/query/workflow",
+    json={
+        "query": "What framework does the backend use?",
+        "response": "The backend uses FastAPI.",
+        "top_k": 3,
+        "history": None,
+    },
+)
+
+result = response.json()
+print(result["validation"]["is_valid"])
+print(result["selection"]["report"])
+```
+
+The endpoint returns `400` with a structured `detail` object when a tool policy rejects the request. The object contains `code`, `tool_name`, and `message`.
+
+### Constrained Agent Task
+
+The constrained agent boundary currently supports one task, `grounded_validation`. It runs the same bounded workflow and rejects arbitrary task names:
+
+```python
+response = requests.post(
+    f"{RAG_URL}/api/query/agent",
+    json={
+        "task": "grounded_validation",
+        "query": "What framework does the backend use?",
+        "response": "The backend uses FastAPI.",
+        "top_k": 3,
+    },
+)
+
+result = response.json()
+print(result["validation"]["is_valid"])
+```
+
 ### Multi-Turn Conversation
 
 ```python

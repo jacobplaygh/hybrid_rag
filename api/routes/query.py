@@ -3,18 +3,34 @@
 import logging
 import os
 import sys
+import time
 from fastapi import APIRouter, HTTPException, status, BackgroundTasks
 from fastapi.responses import StreamingResponse
 import json
 from datetime import datetime, timezone
 
 from api.config import get_settings
-from api.schemas import QueryRequest, QueryResponse, ChatRequest, ChatResponse, RetrievedDocument
+from api.schemas import (
+    QueryRequest,
+    QueryResponse,
+    ChatRequest,
+    ChatResponse,
+    RetrievedDocument,
+    ConstrainedWorkflowRequest,
+    ConstrainedAgentRequest,
+    AgenticLoopMetadata,
+)
 from rag.quality_metrics import QualityMetricsCalculator
 from rag.confidence_scorer import ConfidenceScorer
 from observability.tracing import get_tracer
 from rag.hybrid_rag import HybridRAG
 from data.vector_store import get_vector_store
+from observability.metrics import stream_duration, stream_first_chunk_latency
+from api.services.constrained_workflow import (
+    ConstrainedWorkflowAgent,
+    ConstrainedWorkflowService,
+)
+from rag.constrained_tools import ToolExecutionError
 
 try:
     from langchain_nvidia_ai_endpoints import ChatNVIDIA
@@ -79,6 +95,16 @@ def get_rag_system() -> HybridRAG:
     return _rag_system
 
 
+def get_constrained_workflow_service() -> ConstrainedWorkflowService:
+    """Create a fresh bounded workflow for one caller request."""
+    return ConstrainedWorkflowService.from_rag(get_rag_system())
+
+
+def get_constrained_workflow_agent() -> ConstrainedWorkflowAgent:
+    """Create a fresh constrained agent for one caller request."""
+    return ConstrainedWorkflowAgent.from_rag(get_rag_system())
+
+
 @router.post("/", response_model=QueryResponse, tags=["Query"])
 async def query(request: QueryRequest):
     """Execute a RAG query."""
@@ -104,6 +130,19 @@ async def query(request: QueryRequest):
         scorer = ConfidenceScorer()
         confidence = scorer.score_response(docs, result["response"])
         
+        agentic_loop = None
+        if result.get("agentic_loop"):
+            agentic_payload = result["agentic_loop"]
+            agentic_loop = AgenticLoopMetadata(
+                enabled=bool(agentic_payload.get("enabled", True)),
+                status=agentic_payload.get("status"),
+                confidence=agentic_payload.get("confidence"),
+                iterations=agentic_payload.get("iterations", 0),
+                queries_tried=agentic_payload.get("queries_tried", []),
+                reformulation_reasons=agentic_payload.get("reformulation_reasons", []),
+                missing_aspects=agentic_payload.get("missing_aspects", []),
+            )
+
         # Convert to response format
         return QueryResponse(
             query_id=result["query_id"],
@@ -125,6 +164,7 @@ async def query(request: QueryRequest):
             timestamp=datetime.fromisoformat(result["timestamp"]),
             confidence_score=confidence,
             quality_metrics=quality,
+            agentic_loop=agentic_loop,
         )
     
     except HTTPException:
@@ -137,29 +177,93 @@ async def query(request: QueryRequest):
         )
 
 
+@router.post("/workflow", tags=["Query"])
+async def constrained_workflow(request: ConstrainedWorkflowRequest):
+    """Run the bounded workflow used by constrained callers and future agents."""
+    try:
+        service = get_constrained_workflow_service()
+        return await service.run(
+            query=request.query,
+            response=request.response,
+            history=request.history,
+            top_k=request.top_k,
+        )
+    except ToolExecutionError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=error.as_dict())
+    except Exception as error:
+        logger.error(f"Constrained workflow endpoint error: {error}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(error),
+        )
+
+
+@router.post("/agent", tags=["Query"])
+async def constrained_agent(request: ConstrainedAgentRequest):
+    """Run an explicitly supported multi-step constrained agent task."""
+    try:
+        agent = get_constrained_workflow_agent()
+        return await agent.run(
+            task=request.task,
+            query=request.query,
+            response=request.response,
+            history=request.history,
+            top_k=request.top_k,
+        )
+    except ToolExecutionError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=error.as_dict())
+    except Exception as error:
+        logger.error(f"Constrained agent endpoint error: {error}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(error),
+        )
+
+
 @router.post("/stream", tags=["Query"])
 async def query_stream(request: QueryRequest):
     """Stream RAG query response."""
     try:
         rag = get_rag_system()
-        
-        # Call HybridRAG with stream=True to get the async generator
-        generator = await rag.query(
-            query=request.query,
-            mode=request.mode,
-            top_k=request.top_k,
-            model=request.model,
-            stream=True,
-        )
+        generator = await rag.query_stream(request)
         
         async def stream_wrapper():
-            async for chunk in generator:
-                # If chunk is a string, yield it directly. 
-                # If it's a dict/object, yield as JSON.
-                if isinstance(chunk, str):
-                    yield chunk.encode()
-                else:
-                    yield json.dumps(chunk).encode() + b"\n"
+            stream_start = time.perf_counter()
+            first_chunk_recorded = False
+            try:
+                previous_content = ""
+                async for chunk in generator:
+                    # Extract content if chunk is an object (e.g. AIMessageChunk)
+                    content = chunk
+                    if hasattr(chunk, "content"):
+                        content = chunk.content
+                    
+                    if content is None:
+                        continue
+
+                    content = str(content)
+                    if (
+                        previous_content
+                        and previous_content[-1].isalnum()
+                        and content
+                        and content[0].isalnum()
+                    ):
+                        content = " " + content
+                    previous_content += content
+
+                    # Encode content so newlines and SSE delimiters remain part of one event.
+                    data = f"data: {json.dumps({'content': content})}\n\n"
+                    if not first_chunk_recorded:
+                        if stream_first_chunk_latency:
+                            stream_first_chunk_latency.observe(time.perf_counter() - stream_start)
+                        first_chunk_recorded = True
+                    yield data.encode("utf-8")
+            except Exception as e:
+                logger.error(f"Error during stream generation: {e}", exc_info=True)
+                yield f"data: {json.dumps({'error': str(e)})}\n\n".encode("utf-8")
+            finally:
+                if stream_duration:
+                    stream_duration.observe(time.perf_counter() - stream_start)
         
         return StreamingResponse(stream_wrapper(), media_type="text/event-stream")
     
@@ -233,7 +337,7 @@ async def chat_stream(request: ChatRequest):
         rag = get_rag_system()
         
         # Call HybridRAG with stream=True to get the async generator
-        generator = await rag.chat(
+        generator = rag.chat(
             message=request.message,
             session_id=request.session_id,
             model=request.model,
@@ -245,9 +349,13 @@ async def chat_stream(request: ChatRequest):
                 # If chunk is a string, yield it directly. 
                 # If it's a dict/object, yield as JSON.
                 if isinstance(chunk, str):
-                    yield chunk.encode()
+                    content = chunk
                 else:
-                    yield json.dumps(chunk).encode() + b"\n"
+                    content = json.dumps(chunk)
+                
+                # SSE format: "data: <content>\n\n"
+                data = f"data: {content}\n\n"
+                yield data.encode("utf-8")
         
         return StreamingResponse(stream_wrapper(), media_type="text/event-stream")
     

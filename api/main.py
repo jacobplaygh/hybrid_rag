@@ -273,12 +273,6 @@ async def root():
         "health": "/health",
     }
 
-
-@app.get("/health")
-async def health_check_simple():
-    """Basic health check endpoint."""
-    return {"status": "healthy", "timestamp": datetime.now(timezone.utc).isoformat()}
-
 @app.get("/analytics/summary")
 async def get_analytics_summary():
     """Retrieve a summary of query patterns and system performance."""
@@ -290,6 +284,16 @@ async def get_analytics_summary():
     except Exception as e:
         logger.error(f"Failed to retrieve analytics summary: {e}")
         raise HTTPException(status_code=500, detail="Internal server error retrieving analytics")
+
+@app.get("/analytics/latency")
+async def get_analytics_latency():
+    """Retrieve stage-level latency and cache correlation metrics."""
+    try:
+        rag = app.state.rag
+        return rag.analytics.analyze_latency()
+    except Exception as e:
+        logger.error(f"Failed to retrieve analytics latency: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error retrieving analytics latency")
 
 @app.get("/analytics/failures")
 async def get_analytics_failures(limit: int = 10):

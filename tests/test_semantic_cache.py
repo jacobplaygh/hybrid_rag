@@ -1,3 +1,4 @@
+import numpy as np
 import pytest
 import asyncio
 from unittest.mock import MagicMock
@@ -88,3 +89,19 @@ async def test_semantic_cache_threshold_tuning():
     cache_low = SemanticCache(embedding_model=mock_model, threshold=0.5)
     cache_low.set(query1, response)
     assert cache_low.get(query2) is not None
+
+
+@pytest.mark.anyio
+async def test_semantic_cache_handles_numpy_embeddings():
+    """NumPy embeddings should be normalized into hashable float tuples."""
+
+    class NumpyEmbeddingModel:
+        def get_text_embedding(self, text: str):
+            return np.array([1.0, 0.0, 0.0]) if "hello" in text.lower() else np.array([0.0, 1.0, 0.0])
+
+    cache = SemanticCache(embedding_model=NumpyEmbeddingModel(), threshold=0.9)
+    cache.set("Hello world", {"answer": "Hi there!"})
+
+    result = cache.get("Hello world")
+    assert result is not None
+    assert result["response"]["answer"] == "Hi there!"

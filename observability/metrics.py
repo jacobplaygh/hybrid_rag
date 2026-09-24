@@ -32,6 +32,18 @@ if HAS_PROMETHEUS:
         buckets=(0.01, 0.05, 0.1, 0.5, 1.0),
     )
 
+    stream_first_chunk_latency = Histogram(
+        "rag_stream_first_chunk_duration_seconds",
+        "Time from stream start until the first response chunk",
+        buckets=(0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0),
+    )
+
+    stream_duration = Histogram(
+        "rag_stream_duration_seconds",
+        "Total streaming response duration",
+        buckets=(0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0),
+    )
+
     tokens_used = Counter(
         "rag_tokens_used_total",
         "Total tokens used in LLM calls",
@@ -89,6 +101,8 @@ else:
     query_counter = None
     query_latency = None
     retrieval_latency = None
+    stream_first_chunk_latency = None
+    stream_duration = None
     tokens_used = None
     cache_hits = None
     cache_misses = None
