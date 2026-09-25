@@ -1265,40 +1265,46 @@ class HybridRAG:
         self.memory.add_message(session_id, "assistant", response)
         return response
     
-    async def _decompose_query(self, query: str, context: str, llm) -> str:
+    async def _decompose_query(
+        self,
+        query: str,
+        context: str,
+        llm,
+        top_k: int = 5,
+    ) -> str:
         """Decomposed query response using a multi-stage retrieve-rerank-synthesize pipeline."""
-        chain = self.chains["query_decomposer"]
-        
         # 1. Decompose the complex query into sub-queries
         sub_queries = await self.chains["decompose"].decompose(query)
         logger.info(f"Decomposed query into {len(sub_queries)} sub-queries: {sub_queries}")
-        
+
         sub_answers = {}
         all_context_docs = []
-        
+
         for i, sub_q in enumerate(sub_queries):
             # 2. Rewrite each sub-query for better retrieval
             rewritten_q = await self.chains["decompose"].rewrite(sub_q)
             if rewritten_q != sub_q:
                 logger.info(f"Rewrote sub-query {i+1}: '{sub_q}' -> '{rewritten_q}'")
-            
+
             # 3. Retrieve context for the rewritten sub-query
-            sub_docs, sub_id = await self.retriever.retrieve(
+            sub_docs, _ = await self.retriever.retrieve(
                 rewritten_q,
                 top_k=top_k,
                 alpha=0.7,
             )
-            
+
             # Rerank sub-query results
-            reranked_sub_docs = self.reranker.rerank(rewritten_q, sub_docs, top_k=top_k)
+            reranked_sub_docs = None
+            if self.reranker is not None:
+                reranked_sub_docs = self.reranker.rerank(rewritten_q, sub_docs, top_k=top_k)
             final_sub_docs = reranked_sub_docs if reranked_sub_docs is not None else []
             all_context_docs.extend(final_sub_docs)
-            
+
             # 4. Generate answer for the sub-query
             sub_context_text = self._build_context_text(final_sub_docs)
             sub_response = await self._simple_rag(rewritten_q, sub_context_text, llm)
             sub_answers[sub_q] = sub_response
-        
+
         # 5. Synthesize all sub-answers into the final response
         response = await self.chains["decompose"].invoke(query, sub_answers)
         return response

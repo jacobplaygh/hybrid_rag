@@ -8,6 +8,7 @@ Implements:
 
 import asyncio
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional, Set
@@ -388,12 +389,27 @@ class QueryReformulator:
         )
     
     def _strategy_add_keywords(self, query: str, aspects: List[str]) -> str:
-        """Rule-based: append keywords from missing aspects."""
+        """Rule-based: append only genuinely new keywords from missing aspects."""
         if not aspects:
             return query
-        
+
+        normalized_query = " ".join(re.findall(r"[a-zA-Z0-9]+", query.lower()))
+        tokens = set(normalized_query.split())
+        filtered = []
+        for aspect in aspects:
+            if not aspect:
+                continue
+            aspect_text = aspect.replace("_", " ").strip()
+            aspect_tokens = set(re.findall(r"[a-zA-Z0-9]+", aspect_text.lower()))
+            if not aspect_tokens or aspect_tokens.issubset(tokens):
+                continue
+            filtered.append(aspect_text)
+
+        if not filtered:
+            return query
+
         # Take up to 2 most relevant aspects and add as keywords
-        keywords = " ".join(aspects[:2]).replace("_", " ")
+        keywords = " ".join(filtered[:2])
         return f"{query} {keywords}"
     
     def _strategy_broaden(self, query: str) -> str:
@@ -516,7 +532,9 @@ class AgenticRetrieverLoop:
         loop_start = time.time()
         timeout = timeout_seconds or self.config.timeout_seconds
         state = AgenticLoopState(query_history=[query])
-        
+        best_iteration_result = None
+        best_confidence = float("-inf")
+
         try:
             while state.iteration < self.config.max_retries + 1:
                 # Check timeout
@@ -534,30 +552,66 @@ class AgenticRetrieverLoop:
                     state=state
                 )
                 
+                # Check if timeout occurred while processing this iteration.
+                if time.time() - loop_start > timeout:
+                    state.final_status = "timeout"
+                    logger.warning(f"Agentic loop timeout after {state.iteration + 1} iterations")
+                    break
+
+                if iteration_result.get("confidence", 0.0) > best_confidence:
+                    best_confidence = iteration_result.get("confidence", 0.0)
+                    best_iteration_result = iteration_result
+
                 # Check if we're done
                 if state.iteration < self.config.max_retries:
                     confidence = iteration_result["confidence"]
-                    
-                    if confidence >= self.config.confidence_threshold:
+                    evaluation = iteration_result["evaluation"]
+
+                    if evaluation.is_sufficient or confidence >= self.config.confidence_threshold:
                         state.final_status = "success"
                         logger.info(
                             f"Agentic loop: Query resolved in {state.iteration + 1} "
-                            f"iteration(s) with confidence {confidence:.2f}"
+                            f"iteration(s) with confidence {confidence:.2f} "
+                            f"(sufficient={evaluation.is_sufficient})"
                         )
                         break
-                    
+
+                    if not evaluation.missing_aspects:
+                        state.final_status = "low_confidence"
+                        logger.info(
+                            f"Agentic loop: No actionable missing aspects for query '{state.query_history[-1]}'; "
+                            f"stopping retry loop at confidence {confidence:.2f}."
+                        )
+                        break
+
                     # Reformulate and retry
                     if self.config.use_query_reformulation:
-                        evaluation = iteration_result["evaluation"]
                         reformulation = await self.reformulator.reformulate(
                             original_query=state.query_history[-1],
                             missing_aspects=evaluation.missing_aspects,
                             strategy=self.config.retry_strategy
                         )
-                        
+
+                        reformulated_query = (reformulation.reformulated_query or "").strip()
+                        if not reformulated_query:
+                            state.final_status = "low_confidence"
+                            logger.info(
+                                f"Agentic loop: Reformulator produced no query for '{state.query_history[-1]}'; "
+                                f"stopping retry loop to avoid empty low-relevance searches."
+                            )
+                            break
+
+                        if reformulated_query == state.query_history[-1].strip() and state.iteration == 0:
+                            state.final_status = "low_confidence"
+                            logger.info(
+                                f"Agentic loop: Reformulator produced the same query for '{state.query_history[-1]}'; "
+                                f"stopping retry loop to avoid repeated low-relevance searches."
+                            )
+                            break
+
                         state.query_history.append(reformulation.reformulated_query)
                         state.reformulation_reasons.append(reformulation.reasoning)
-                        
+
                         logger.info(
                             f"Agentic loop iteration {state.iteration + 1}: "
                             f"Confidence {confidence:.2f} < threshold {self.config.confidence_threshold}. "
@@ -569,10 +623,11 @@ class AgenticRetrieverLoop:
                 
                 state.iteration += 1
             
-            # Build final result
-            final_docs = iteration_result.get("documents", [])
-            final_confidence = iteration_result.get("confidence", 0.0)
-            final_evaluation = iteration_result.get("evaluation")
+            # Build final result using the strongest iteration, not just the last retry.
+            final_result = best_iteration_result or iteration_result
+            final_docs = final_result.get("documents", [])
+            final_confidence = final_result.get("confidence", 0.0)
+            final_evaluation = final_result.get("evaluation")
             
             state.total_latency_ms = (time.time() - loop_start) * 1000
             
@@ -609,6 +664,59 @@ class AgenticRetrieverLoop:
                 }
             }
     
+    @staticmethod
+    def _coerce_float(value: Any, default: float = 0.0) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return float(default)
+
+    @staticmethod
+    def _normalize_doc(doc: Any) -> Dict[str, Any]:
+        """Coerce a document-shaped item into a dict used by the evaluator."""
+        if doc is None:
+            return {"doc_id": "unknown", "content": "", "source": "unknown", "score": 0.0, "relevance_score": 0.0}
+
+        if isinstance(doc, dict):
+            data = dict(doc)
+        elif isinstance(doc, (list, tuple)):
+            if len(doc) == 2 and isinstance(doc[0], str) and isinstance(doc[1], dict):
+                data = dict(doc[1])
+                data.setdefault("doc_id", doc[0])
+            elif len(doc) >= 4:
+                data = {
+                    "doc_id": doc[0],
+                    "content": doc[1],
+                    "source": doc[2],
+                    "score": doc[3],
+                }
+            else:
+                data = {"doc_id": str(doc), "content": str(doc), "source": "unknown", "score": 0.0}
+        elif hasattr(doc, "to_dict"):
+            data = doc.to_dict()
+        elif hasattr(doc, "__dict__"):
+            data = vars(doc)
+        else:
+            data = {"doc_id": str(doc), "content": str(doc), "source": "unknown", "score": 0.0}
+
+        score_value = data.get("score", data.get("relevance_score", 0.0))
+        relevance_value = data.get("relevance_score", score_value)
+        score = AgenticRetrieverLoop._coerce_float(score_value, 0.0)
+        relevance = AgenticRetrieverLoop._coerce_float(relevance_value, 0.0)
+
+        normalized = {
+            "doc_id": data.get("doc_id") or data.get("id") or "unknown",
+            "content": data.get("content") or data.get("text") or "",
+            "source": data.get("source") or data.get("doc_source") or "unknown",
+            "score": score,
+            "relevance_score": relevance,
+        }
+        if normalized["score"] > 1.0:
+            normalized["score"] = normalized["score"] / 100.0
+        if normalized["relevance_score"] > 1.0:
+            normalized["relevance_score"] = normalized["relevance_score"] / 100.0
+        return normalized
+
     async def _iteration(self,
                         query: str,
                         iteration: int,
@@ -635,26 +743,14 @@ class AgenticRetrieverLoop:
                 retrieved_docs = retrieval_result[0]
             else:
                 retrieved_docs = retrieval_result
+            if retrieved_docs is None:
+                retrieved_docs = []
+            elif isinstance(retrieved_docs, dict):
+                retrieved_docs = [retrieved_docs]
             retrieval_latency = time.time() - retrieval_start
             
             # Convert to dict format for evaluation
-            docs_dict = [
-                {
-                    "doc_id": doc.doc_id if hasattr(doc, 'doc_id') else doc.get('doc_id'),
-                    "content": doc.content if hasattr(doc, 'content') else doc.get('content'),
-                    "source": doc.source if hasattr(doc, 'source') else doc.get('source'),
-                    "score": doc.score if hasattr(doc, 'score') else doc.get('score'),
-                    "relevance_score": (
-                        doc.relevance_score if hasattr(doc, 'relevance_score')
-                        else (
-                            doc.get('relevance_score', doc.get('score', 0))
-                            if isinstance(doc, dict)
-                            else getattr(doc, 'score', 0)
-                        )
-                    ),
-                }
-                for doc in retrieved_docs
-            ]
+            docs_dict = [self._normalize_doc(doc) for doc in retrieved_docs]
             
             state.retrieval_history.append(docs_dict)
             

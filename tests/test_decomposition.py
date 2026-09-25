@@ -1,5 +1,9 @@
 import asyncio
 import logging
+from unittest.mock import AsyncMock, Mock
+
+import pytest
+
 from rag.hybrid_rag import HybridRAG
 from api.config import get_settings
 from rag.retrieval import HybridRetriever
@@ -78,6 +82,31 @@ async def validate_decomposition_recall():
     decompose_answer = decompose_result.get('answer') or "No answer"
     logger.info(f"Simple Response: {simple_answer[:200]}...")
     logger.info(f"Decompose Response: {decompose_answer[:200]}...")
+
+@pytest.mark.asyncio
+async def test_decompose_query_uses_default_top_k():
+    """The decompose helper should not reference an undefined top_k variable."""
+    rag = HybridRAG.__new__(HybridRAG)
+    rag.chains = {
+        "decompose": Mock(
+            decompose=AsyncMock(return_value=["What is Python?"]),
+            rewrite=AsyncMock(return_value="What is Python?"),
+            invoke=AsyncMock(return_value="synthetic answer"),
+        ),
+        "simple": Mock(),
+    }
+    rag.retriever = Mock()
+    rag.retriever.retrieve = AsyncMock(return_value=([{"content": "python doc", "source": "doc"}], "retrieval_id"))
+    rag.reranker = Mock()
+    rag.reranker.rerank = Mock(return_value=[{"content": "python doc", "source": "doc"}])
+    rag._build_context_text = Mock(return_value="python context")
+    rag._simple_rag = AsyncMock(return_value="answer")
+
+    result = await rag._decompose_query("What is Python?", "context", llm=None)
+
+    assert result == "synthetic answer"
+    rag.retriever.retrieve.assert_awaited_once_with("What is Python?", top_k=5, alpha=0.7)
+
 
 if __name__ == "__main__":
     asyncio.run(validate_decomposition_recall())
