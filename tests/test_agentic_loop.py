@@ -202,6 +202,20 @@ class TestQueryReformulator:
         assert "typing" in result.reformulated_query.lower()
         assert "functions" in result.reformulated_query.lower()
 
+    @pytest.mark.asyncio
+    async def test_reformulate_add_keywords_skips_terms_already_in_query(self, reformulator):
+        """The reformulator should avoid duplicating terms that are already present in the original query."""
+        query = "What is the FastAPI backend setup and environment configuration?"
+
+        result = await reformulator.reformulate(
+            original_query=query,
+            missing_aspects=["fastapi", "environment", "configuration"],
+            strategy="add_keywords",
+        )
+
+        assert result.reformulated_query == query
+        assert result.strategy == "add_keywords"
+
 class TestAgenticRetrieverLoop:
     """Test AgenticRetrieverLoop orchestration."""
 
@@ -310,6 +324,26 @@ class TestAgenticRetrieverLoop:
         # Without LLM, should fall back to add_keywords
         assert result.strategy == "add_keywords"
         assert "typing" in result.reformulated_query.lower()
+
+    @pytest.mark.asyncio
+    async def test_retrieve_with_retry_uses_sufficiency_gate(self, agentic_loop, mock_evaluator):
+        """A sufficient context should succeed without unnecessary reformulation even if confidence is slightly below the raw threshold."""
+        mock_evaluator.evaluate.return_value = SufficiencyEvaluation(
+            is_sufficient=True,
+            confidence=0.65,
+            missing_aspects=[],
+            reasoning="Good context coverage",
+            metrics={"term_coverage": 0.8, "diversity_score": 0.9, "relevance_avg": 0.8},
+        )
+
+        result = await agentic_loop.retrieve_with_retry(
+            query="What is Python?",
+            top_k=3,
+        )
+
+        assert result["final_status"] == "success"
+        assert result["iterations"] == 1
+        assert result["confidence"] == 0.65
     
     @pytest.mark.asyncio
     async def test_reformulate_empty_aspects(self, reformulator):
@@ -465,6 +499,26 @@ class TestAgenticRetrieverLoop:
         assert result["final_status"] == "success"
     
     @pytest.mark.asyncio
+    async def test_retrieve_with_retry_stops_when_no_missing_aspects(self, agentic_loop, mock_evaluator):
+        """A low-confidence query with no actionable missing aspects should stop instead of reformulating endlessly."""
+        mock_evaluator.evaluate.return_value = SufficiencyEvaluation(
+            is_sufficient=False,
+            confidence=0.5,
+            missing_aspects=[],
+            reasoning="No specific gap detected",
+            metrics={}
+        )
+
+        result = await agentic_loop.retrieve_with_retry(
+            query="What is Python?",
+            top_k=5
+        )
+
+        assert result["final_status"] == "low_confidence"
+        assert result["iterations"] == 1
+        agentic_loop.reformulator.reformulate.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_retrieve_with_retry_max_retries(self, agentic_loop, mock_evaluator):
         """Test max retries limit."""
         # Always return low confidence
@@ -485,6 +539,66 @@ class TestAgenticRetrieverLoop:
         assert result["final_status"] == "max_retries"
         assert result["iterations"] == agentic_loop.config.max_retries + 1
     
+    @pytest.mark.asyncio
+    async def test_retrieve_with_retry_keeps_best_iteration(self, agentic_loop, mock_evaluator, mock_retriever):
+        """The loop should retain the highest-confidence iteration rather than the last reformulated one."""
+        mock_retriever.retrieve.side_effect = [
+            [{"doc_id": "doc-best", "content": "relevant context", "source": "src1", "score": 0.9}],
+            [{"doc_id": "doc-worse", "content": "irrelevant noise", "source": "src2", "score": 0.3}],
+        ]
+        mock_evaluator.evaluate.side_effect = [
+            SufficiencyEvaluation(
+                is_sufficient=False,
+                confidence=0.72,
+                missing_aspects=["details"],
+                reasoning="Needs more detail",
+                metrics={}
+            ),
+            SufficiencyEvaluation(
+                is_sufficient=True,
+                confidence=0.58,
+                missing_aspects=[],
+                reasoning="Good enough context",
+                metrics={}
+            ),
+        ]
+
+        result = await agentic_loop.retrieve_with_retry(
+            query="What is Python?",
+            top_k=5,
+        )
+
+        assert result["final_status"] == "success"
+        assert result["confidence"] == 0.72
+        assert result["documents"][0]["doc_id"] == "doc-best"
+
+    @pytest.mark.asyncio
+    async def test_retrieve_with_retry_stops_when_reformulation_is_noop(
+        self, agentic_loop, mock_evaluator, mock_reformulator
+    ):
+        """A reformulation that returns the same query should stop the loop instead of burning retries."""
+        mock_evaluator.evaluate.return_value = SufficiencyEvaluation(
+            is_sufficient=False,
+            confidence=0.5,
+            missing_aspects=["python", "environment"],
+            reasoning="Need more specific context",
+            metrics={}
+        )
+        mock_reformulator.reformulate.return_value = QueryReformation(
+            reformulated_query="What is Python?",
+            strategy="add_keywords",
+            confidence=0.5,
+            reasoning="No new terms were added"
+        )
+
+        result = await agentic_loop.retrieve_with_retry(
+            query="What is Python?",
+            top_k=5,
+        )
+
+        assert result["final_status"] == "low_confidence"
+        assert result["iterations"] == 1
+
     @pytest.mark.asyncio
     async def test_retrieve_with_retry_timeout(self, agentic_loop, mock_evaluator):
         """Test timeout protection."""
@@ -522,6 +636,23 @@ class TestAgenticRetrieverLoop:
         
         assert len(result["documents"]) == 0
         assert result["confidence"] < 0.65
+
+    @pytest.mark.asyncio
+    async def test_retrieve_with_retry_handles_list_shaped_docs(self, agentic_loop, mock_retriever, mock_evaluator):
+        """List-shaped docs should be normalized before sufficiency evaluation."""
+        mock_retriever.retrieve.return_value = (
+            [["doc-1", "Python is a programming language.", "source-1", 0.93]],
+            "query-1",
+        )
+
+        result = await agentic_loop.retrieve_with_retry(
+            query="What is Python?",
+            top_k=5,
+        )
+
+        assert result["final_status"] == "success"
+        assert result["documents"][0]["doc_id"] == "doc-1"
+        assert result["documents"][0]["score"] == 0.93
 
 
 class TestAgenticLoopConfig:
