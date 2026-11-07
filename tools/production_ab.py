@@ -1,6 +1,7 @@
 """Run the A/B harness against the local HybridRAG query pipeline."""
 
 import asyncio
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict
 
@@ -9,7 +10,14 @@ from data.vector_store import ChromaVectorStore
 from rag.hybrid_rag import HybridRAG
 
 
-_rag: HybridRAG | None = None
+@lru_cache(maxsize=1)
+def _get_rag() -> HybridRAG:
+    vector_store = ChromaVectorStore(persist_dir=_chroma_path())
+    rag = HybridRAG(vector_store=vector_store)
+    # Keep each variant independent when evaluating the same query set.
+    rag.semantic_cache = None
+    rag.query_cache.clear()
+    return rag
 
 
 def _chroma_path() -> str:
@@ -20,17 +28,6 @@ def _chroma_path() -> str:
     if configured.parts and configured.parts[0].lower() == project_root.name.lower():
         return str(project_root.parent / configured)
     return str(project_root / configured)
-
-
-def _get_rag() -> HybridRAG:
-    global _rag
-    if _rag is None:
-        vector_store = ChromaVectorStore(persist_dir=_chroma_path())
-        _rag = HybridRAG(vector_store=vector_store)
-        # Keep each variant independent when evaluating the same query set.
-        _rag.semantic_cache = None
-        _rag.query_cache.clear()
-    return _rag
 
 
 def _run(query: str, *, agentic: bool) -> Dict[str, Any]:

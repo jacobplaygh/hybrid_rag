@@ -54,6 +54,13 @@ class ConstrainedAgentRequest(ConstrainedWorkflowRequest):
     task: str = Field(default="grounded_validation", min_length=1, max_length=100)
 
 
+class AgentRunRequest(BaseModel):
+    """Request model for a goal-directed, bounded RAG agent run."""
+    query: str = Field(..., min_length=1, max_length=10000)
+    top_k: int = Field(default=5, ge=1, le=10)
+    max_steps: int = Field(default=5, ge=1, le=6)
+
+
 class RetrievedDocument(BaseModel):
     """A retrieved document chunk."""
     content: str
@@ -80,6 +87,41 @@ class AgenticLoopMetadata(BaseModel):
     queries_tried: List[str] = Field(default_factory=list)
     reformulation_reasons: List[str] = Field(default_factory=list)
     missing_aspects: List[str] = Field(default_factory=list)
+
+
+class AgentStepResponse(BaseModel):
+    """One bounded tool action and its summarized observation."""
+    step: int
+    action: str
+    arguments: Dict[str, Any]
+    observation: str
+
+
+class AgentCitation(BaseModel):
+    """A source used to ground the agent's answer."""
+    doc_id: str = ""
+    source: str
+    snippet: str
+
+
+class AgentValidationResponse(BaseModel):
+    """Response-grounding validation result."""
+    is_valid: bool
+    score: float
+    issues: List[str] = Field(default_factory=list)
+
+
+class AgentRunResponse(BaseModel):
+    """Response contract for a goal-directed RAG agent run."""
+    query: str
+    response: str
+    status: str
+    steps: List[AgentStepResponse] = Field(default_factory=list)
+    tools_used: List[str] = Field(default_factory=list)
+    retrieved_docs: List[RetrievedDocument] = Field(default_factory=list)
+    citations: List[AgentCitation] = Field(default_factory=list)
+    validation: Optional[AgentValidationResponse] = None
+    elapsed_ms: float
 
 
 class QueryResponse(BaseModel):

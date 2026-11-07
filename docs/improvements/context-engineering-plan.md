@@ -140,4 +140,4 @@ Completed in the first slice:
 
 ## Current Slice
 
-Phase 4 implementation is complete for deterministic evaluation and persisted latency observability. Phase 5 now has a caller-facing service boundary, narrowly scoped orchestration, and governed analytics lookup; the next slice can add an analytics-aware agent task only after its policy and evaluation signals are defined.
+Phase 4 implementation is complete for deterministic evaluation and persisted latency observability. Phase 5 has a caller-facing service boundary, narrowly scoped orchestration, and governed analytics lookup. A separate goal-directed RAG agent is now implemented at `POST /api/query/agent/run`; it can plan bounded read-only search, graph-search, and analytics calls, then answer from selected evidence with citations and validation metadata. The next slice is to expand agent evaluation and establish release gates before enabling broader use.

@@ -8,7 +8,7 @@ import re
 import time
 import uuid
 from types import SimpleNamespace
-from typing import List, Optional, Dict, Any
+from typing import Any, AsyncGenerator, Dict, List, Optional, Union
 from datetime import datetime, timezone
 from rag.reranker import CrossEncoderReranker
 from rag.confidence_scorer import ConfidenceScorer
@@ -29,6 +29,22 @@ from rag.agentic_loop import (
     ContextSufficiencyEvaluator,
     QueryReformulator,
 )
+from rag.constrained_tools import ConstrainedToolExecutor, WorkflowPolicy
+
+from api.config import get_settings
+
+from observability.metrics import (
+    query_counter,
+    query_latency,
+    tokens_used,
+    cache_hits,
+    cache_misses,
+    ndcg_gauge,
+    confidence_gauge,
+    errors_total,
+    retrieval_latency,
+)
+from observability.tracing import LangSmithTracer
 
 DEFAULT_MAX_CONTEXT_TOKENS = 120000
 
@@ -37,28 +53,6 @@ try:
     HAS_LANGCHAIN = True
 except ImportError:
     HAS_LANGCHAIN = False
-
-from rag.constrained_tools import ConstrainedToolExecutor, WorkflowPolicy
-from api.config import get_settings
-from observability.metrics import (
-    query_counter, 
-    query_latency, 
-    tokens_used, 
-    cache_hits, 
-    cache_misses, 
-    ndcg_gauge, 
-    confidence_gauge, 
-    errors_total,
-    retrieval_latency
-)
-from observability.tracing import LangSmithTracer
-from rag.chains import create_chains, QueryDecomposerChain
-from rag.retrieval import HybridRetriever
-from rag.memory import ConversationMemory
-from rag.semantic_cache import SemanticCache
-from rag.context_manager import ContextManager
-from rag.response_validator import ResponseValidator
-from rag.analytics import QueryAnalytics
 
 logger = logging.getLogger(__name__)
 
@@ -159,79 +153,55 @@ class HybridRAG:
         """
         # This is a simplified implementation for evaluation purposes.
         # In a full implementation, this would integrate with the ConstrainedWorkflowAgent.
-        
-        tools = {
-            "document_search": self.vector_store.search,
-        }
-        
+        tools = {"document_search": self.vector_store.search}
         executor = ConstrainedToolExecutor.from_policy(tools, policy)
-        
         start_time = time.perf_counter()
+
         try:
-            # Simulate the agent loop: 
+            # Simulate the agent loop:
             # 1. Understand query -> 2. Call tools (constrained) -> 3. Generate response
-            
-            # Step 1: Query Understanding
-            query_plan = await self.query_understanding.analyze(query) if self.query_understanding else {"plan": ["document_search"]}
-            
-            # Step 2: Constrained Tool Execution
-            context_fragments = []
+            query_plan = (
+                await self.query_understanding.analyze(query)
+                if self.query_understanding
+                else {"plan": ["document_search"]}
+            )
+
+            context_fragments: List[Any] = []
             for tool_name in query_plan.get("plan", ["document_search"]):
-                # We wrap the tool call in the executor
-                result = await executor.execute(tool_name, query)
+                result = await executor.execute(tool_name, query=query)
                 context_fragments.append(result)
-            
-            # Step 3: Final Response Generation (Simulated for eval)
-            # In reality, this would call the LLM with the gathered context
+
             response = f"Generated response based on {len(context_fragments)} tool calls."
-            
-            # Validation
-            validation_result = await self.validator.validate(response, query)
-            
+            validation_result = await self.validator.validate(
+                query=query,
+                response=response,
+                context_docs=context_fragments,
+            )
+
             return {
                 "response": response,
                 "tokens_used": executor.current_tokens,
                 "tool_calls": executor.call_count,
                 "is_valid": validation_result.get("is_valid", True),
-                "score": validation_result.get("score", 1.0)
+                "score": validation_result.get("score", 1.0),
             }
-            
-            logger.error(f"Constrained execution failed: {e}")
+        except Exception as exc:  # pragma: no cover - defensive logging path
+            logger.error("Constrained execution failed: %s", exc, exc_info=True)
+            return {
+                "response": f"Error: {exc}",
+                "tokens_used": executor.current_tokens,
+                "tool_calls": executor.call_count,
+                "is_valid": False,
+                "score": 0.0,
+            }
         finally:
             latency = time.perf_counter() - start_time
             self.analytics.log_query({
                 "query": query,
                 "response_time_ms": latency * 1000,
                 "tool_calls": executor.call_count,
-                "status": "success" if 'response' in locals() else "error"
+                "status": "success" if "response" in locals() else "error",
             })
-
-            # Use the vector store's embedding capability if available, 
-            # or a dedicated embedding model. For now, we pass the vector_store
-            # as it typically handles the embedding logic.
-            self.semantic_cache = SemanticCache(
-                embedding_model=self.vector_store, 
-                threshold=settings.SEMANTIC_CACHE_THRESHOLD
-            )
-            logger.info(f"🧠 Semantic Cache initialized (threshold: {settings.SEMANTIC_CACHE_THRESHOLD})")
-
-        reranker_model = None
-        if HAS_LANGCHAIN and get_settings().RETRIEVAL_RERANK:
-            settings = get_settings()
-            reranker_model = ChatNVIDIA(model=settings.RERANK_MODEL)
-
-        self.retriever = HybridRetriever(
-            vector_store,
-            use_reranker=get_settings().RETRIEVAL_RERANK,
-            reranker=reranker_model,
-        )
-        self.query_history: Dict[str, Dict[str, Any]] = {}
-        self.query_cache: Dict[str, Dict[str, Any]] = {}
-        
-        if not HAS_LANGCHAIN or not chat_llm:
-            logger.warning("⚠️ LLM not available; using document-based fallback responses")
-        else:
-            logger.info("🚀 Initialized Hybrid RAG System")
     
     async def query_stream(self, request: Any):
         """
@@ -436,13 +406,14 @@ class HybridRAG:
                         cache_hits.inc()
                     except AttributeError:
                         pass
-                
+
                 response_data = copy.deepcopy(cached_result["response"])
                 response_data.update({
                     "query_id": query_id,
                     "query": query,
                     "timestamp": datetime.now(timezone.utc).isoformat(),
-                    "cache": "semantic_hit"
+                    "cache": "semantic_hit",
+                    "cache_status": cache_status,
                 })
                 
                 self.query_history[query_id] = {
@@ -459,9 +430,9 @@ class HybridRAG:
                 }
                 
                 if stream:
-                    async def cache_stream():
+                    async def semantic_cache_stream():
                         yield response_data["response"]
-                    return cache_stream()
+                    return semantic_cache_stream()
                 return response_data
 
         # 2. Fallback to exact match cache (legacy/backup)
@@ -477,7 +448,8 @@ class HybridRAG:
                 "query_id": query_id,
                 "query": query,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
-                "cache": "exact_hit"
+                "cache": "exact_hit",
+                "cache_status": cache_status,
             })
             
             self.query_history[query_id] = {
@@ -497,9 +469,9 @@ class HybridRAG:
                 self.tracer.trace_query(query_id, query, metadata={"mode": mode, "cache": "exact_hit"})
             
             if stream:
-                async def cache_stream():
+                async def exact_cache_stream():
                     yield response_data["response"]
-                return cache_stream()
+                return exact_cache_stream()
             return response_data
 
         # 3. Core RAG Pipeline
@@ -589,7 +561,7 @@ class HybridRAG:
                 retrieval_id = None
                 agentic_loop_result = None
                 
-                if self.agentic_loop and settings.AGENTIC_LOOP_ENABLED and not (mode == "decompose"):
+                if self.agentic_loop and settings.AGENTIC_LOOP_ENABLED and not mode == "decompose":
                     agentic_loop_result = await self.agentic_loop.retrieve_with_retry(
                         query=query,
                         top_k=top_k,
@@ -607,7 +579,6 @@ class HybridRAG:
                     )
                 else:
                     # Fallback to standard hybrid retrieval
-                    retrieval_start_time = time.time()
                     retrieval_result = await self.retriever.retrieve(
                         query, 
                         top_k=top_k, 

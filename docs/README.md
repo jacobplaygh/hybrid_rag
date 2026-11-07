@@ -18,7 +18,8 @@ docs/
 ├── architecture/             # 🏗️ System design & components
 │   ├── overview.md
 │   ├── advanced.md
-│   └── integration.md
+│   ├── integration.md
+│   └── agent.md
 ├── development/              # 👨‍💻 Development & phases
 │   ├── phase-1.md
 │   └── testing.md
@@ -42,7 +43,8 @@ docs/
 1. **Understanding the system?** → See [Architecture Overview](./architecture/overview.md)
 2. **How does it work?** → See [Advanced Architecture](./architecture/advanced.md)
 3. **Integrating with other systems?** → See [Integration Notes](./architecture/integration.md)
-4. **Running tests?** → See [Testing Guide](./development/testing.md)
+4. **Using the goal-directed agent?** → See [Agent Architecture](./architecture/agent.md)
+5. **Running tests?** → See [Testing Guide](./development/testing.md)
 
 ### For Improvement Planning
 1. **System needs improvement?** → See [Improvement Overview](./improvements/overview.md)

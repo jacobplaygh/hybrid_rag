@@ -31,5 +31,12 @@ Detailed technical implementation guide for the Hybrid RAG system improvements.
 - **Release Gate**: Require no success-rate, groundedness, or context-relevance regression.
 - **GraphRAG Hardening**: Expand multi-hop coverage and entity extraction quality.
 
-## 🚀 Next Technical Milestone: Phase 5.1 Rollout Gate
-The immediate goal is to improve evaluation coverage and keep agentic retrieval configurable until it matches or exceeds the baseline on success rate, groundedness, and context relevance.
+### Phase 6: Goal-Directed RAG Agent ✅ Implemented
+- **Planner**: Selects a registered read-only tool from the user goal and accumulated observations.
+- **Tools**: Hybrid document search, GraphRAG entity search, and aggregate analytics lookup.
+- **Grounding**: Selects bounded document context, synthesizes an answer with source citations, and reports validation.
+- **Governance**: Enforces action allowlists, tool-call and result-size budgets, request limits, and per-operation timeouts.
+- **API**: `POST /api/query/agent/run`; existing query and constrained-workflow endpoints remain available.
+
+## 🚀 Next Technical Milestone: Agent Evaluation Gate
+Expand representative multi-step and analytics evaluation cases. Compare agent answer quality, citation grounding, tool selection, failure handling, and latency against the existing RAG baseline before considering wider rollout. Keep agentic retrieval configurable until it meets the success-rate, groundedness, and context-relevance gates in the rollout evaluation.

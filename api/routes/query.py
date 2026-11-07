@@ -18,6 +18,8 @@ from api.schemas import (
     RetrievedDocument,
     ConstrainedWorkflowRequest,
     ConstrainedAgentRequest,
+    AgentRunRequest,
+    AgentRunResponse,
     AgenticLoopMetadata,
 )
 from rag.quality_metrics import QualityMetricsCalculator
@@ -30,6 +32,7 @@ from api.services.constrained_workflow import (
     ConstrainedWorkflowAgent,
     ConstrainedWorkflowService,
 )
+from api.services.agent_service import RAGAgentService
 from rag.constrained_tools import ToolExecutionError
 
 try:
@@ -103,6 +106,11 @@ def get_constrained_workflow_service() -> ConstrainedWorkflowService:
 def get_constrained_workflow_agent() -> ConstrainedWorkflowAgent:
     """Create a fresh constrained agent for one caller request."""
     return ConstrainedWorkflowAgent.from_rag(get_rag_system())
+
+
+def get_rag_agent_service(max_steps: int = 5) -> RAGAgentService:
+    """Create an isolated goal-directed agent for one caller request."""
+    return RAGAgentService.from_rag(get_rag_system(), max_steps=max_steps)
 
 
 @router.post("/", response_model=QueryResponse, tags=["Query"])
@@ -217,6 +225,27 @@ async def constrained_agent(request: ConstrainedAgentRequest):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=str(error),
+        )
+
+
+@router.post("/agent/run", response_model=AgentRunResponse, tags=["Query"])
+async def run_rag_agent(request: AgentRunRequest):
+    """Run a bounded read-only agent over indexed documents and RAG analytics."""
+    try:
+        service = get_rag_agent_service(max_steps=request.max_steps)
+        result = await service.run(query=request.query, top_k=request.top_k)
+        return service.agent.as_dict(result)
+    except ToolExecutionError as error:
+        logger.warning("RAG agent policy/tool error: %s", error, exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=error.as_dict(),
+        )
+    except Exception as error:
+        logger.error("RAG agent endpoint error: %s", error, exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="RAG agent execution failed",
         )
 
 

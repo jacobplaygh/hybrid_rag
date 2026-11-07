@@ -1,23 +1,32 @@
 # Improvement Summary (Quick Reference)
 
-Executive summary of the Hybrid RAG system improvement trajectory.
+Current implementation status for the Hybrid RAG system.
 
-## 🚀 Current State
-The system has evolved from a basic RAG pipeline to a Hybrid RAG system with:
-- **Hybrid Retrieval**: Combining Semantic (Vector) and Keyword (BM25) search.
-- **Reranking**: High-precision re-scoring using a Cross-Encoder.
-- **Reliability**: Confidence scoring and structured error handling.
+## Current Capabilities
 
-## 📈 Progress Summary
+- **Hybrid retrieval** combines semantic search with BM25 keyword search and optional reranking.
+- **Quality and reliability** include confidence scoring, response validation, source attribution, and structured API errors.
+- **Context engineering** provides bounded document/history selection, diversity limits, and selection reports.
+- **Advanced retrieval** includes query understanding, corrective retrieval, configurable agentic retries, dynamic routing, and GraphRAG.
+- **Observability** includes analytics, Prometheus metrics, request tracing, and context-quality evaluation.
+- **Goal-directed RAG agent** is available at `POST /api/query/agent/run`. It plans bounded, read-only calls to document search, graph search, and aggregate analytics, then synthesizes a source-attributed answer.
 
-| Feature | Status | Impact |
-|---------|--------|--------|
-| Quality Metrics | ✅ | Data-driven evaluation of retrieval |
-| Confidence Scoring | ✅ | User-facing reliability indicator |
-| Error Handling | ✅ | Production-ready API stability |
-| Cross-Encoder Reranking | ✅ | Significant boost in Top-1 precision |
-| Query Understanding | 🏗️ | Handling complex, multi-part queries |
-| Semantic Caching | 📅 | Reduced latency for repeated queries |
+## Agent Safety and Limits
 
-## 🎯 Immediate Focus
-The current priority is **Phase 2.2: Query Understanding**. This will enable the system to handle complex queries by decomposing them into manageable parts, significantly improving the quality of answers for multi-faceted questions.
+- Only registered read-only tools can be called; arbitrary code, writes, and external actions are not exposed.
+- Each run has a configurable maximum of 1–6 tool steps, a maximum retrieval size of 10, per-call result-size limits, and tool timeouts.
+- Document requests require retrieval evidence before the agent can finish.
+- The response includes tool steps, retrieved documents, citations, and validation status; reaching the step limit is reported explicitly.
+- The existing `/api/query/` and `/api/query/agent` endpoints remain available and unchanged.
+
+See [Agent Architecture](../architecture/agent.md) for the runtime and API contract.
+
+## Progress and Next Focus
+
+| Area | Status | Current position |
+|------|--------|------------------|
+| Foundation, retrieval, context, and observability | Implemented | Covered by the existing RAG pipeline |
+| Goal-directed agent runtime | Implemented | Bounded tool planning and grounded synthesis |
+| Agent evaluation and rollout | In progress | Expand representative agent evaluations and compare quality/latency against baseline |
+
+Agentic retrieval remains configurable. Its recorded 15-case evaluation showed lower success rate, context relevance, and groundedness than baseline; do not make that retrieval path the unconditional default until it passes the release gates in [Phase 2 rollout evaluation](../development/phase-2-rollout-evaluation.md).
