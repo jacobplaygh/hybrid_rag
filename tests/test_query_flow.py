@@ -59,7 +59,7 @@ def test_build_context_text_truncates_to_token_budget():
     assert rag._estimate_tokens(context_text, "", None) <= 400
 
 
-def test_query_uses_agentic_documents_and_exposes_loop_metadata():
+def test_query_uses_agentic_documents_and_exposes_loop_metadata(monkeypatch):
     doc = {
         "content": "Agentic retrieval found the relevant document.",
         "source": "agentic.txt",
@@ -68,6 +68,7 @@ def test_query_uses_agentic_documents_and_exposes_loop_metadata():
     }
 
     rag = HybridRAG(vector_store=object(), chat_llm=None, reasoning_llm=None, structured_llm=None, tracer=None)
+    monkeypatch.setattr(get_settings(), "AGENTIC_LOOP_ENABLED", True)
     rag.agentic_loop = SimpleNamespace(
         retrieve_with_retry=AsyncMock(return_value={
             "documents": [doc],

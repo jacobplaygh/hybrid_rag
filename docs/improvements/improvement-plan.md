@@ -13,11 +13,13 @@ This document outlines the high-level strategic roadmap for improving the Hybrid
 | Phase | Focus | Key Deliverables | Status |
 |-------|-------|------------------|--------|
 | **1: Foundation** | Quality & Reliability | Metrics, Attribution, Confidence Scoring, Error Handling | ✅ Completed |
-| **2: Advanced** | Precision & Intelligence | Cross-Encoder Reranking, Query Understanding, Semantic Caching | 🏗️ In Progress |
-| **3: Production** | Stability & Scale | Context Management, Response Validation, Streaming | 📅 Planned |
-| **4: Analytics** | Observability | Dashboards, Query Analytics, Performance Monitoring | 📅 Planned |
+| **2: Advanced** | Precision & Intelligence | Reranking, query understanding, semantic caching | ✅ Implemented |
+| **3: Production** | Stability & Scale | Context management, response validation, streaming | ✅ Implemented |
+| **4: Analytics** | Observability | Query analytics, Prometheus metrics, context evaluation | ✅ Implemented |
+| **5: Rollout** | Quality gates | Agentic retrieval evaluation and rollout controls | 🏗️ In progress |
+| **6: Goal-directed agent** | Bounded tool use | Read-only, request-bounded RAG agent | ✅ Implemented |
 
-## 📈 Success Metrics (KPIs)
+## 📈 Success Metrics (KPIs to target)
 - **Retrieval Quality**: Increase NDCG@3 and MRR.
 - **User Trust**: 100% of responses include source attribution.
 - **Latency**: Reduce average response latency via semantic caching.

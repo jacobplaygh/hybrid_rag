@@ -1,9 +1,8 @@
-# RAG Quality Observability Dashboard
+# RAG quality metrics and dashboard suggestions
 
-This document describes the Grafana dashboard configuration for monitoring the quality and confidence of the Hybrid RAG system.
+This document lists available Prometheus metrics and example panels for a future Grafana dashboard. It does not represent a provisioned dashboard or active alert rules.
 
-## 1. Dashboard Overview
-The Quality Dashboard provides real-time visibility into the retrieval and generation performance of the RAG pipeline, allowing developers to detect regressions in ranking quality or LLM confidence.
+`api/main.py` mounts `/metrics` when `prometheus_client` is importable. The `PROMETHEUS_ENABLED` setting currently does not gate that mount. Confirm that a metric is being updated before relying on it for an alert; the NDCG and confidence gauges are defined but are not currently updated by the query path.
 
 ## 2. Key Panels & Metrics
 
@@ -32,21 +31,22 @@ The Quality Dashboard provides real-time visibility into the retrieval and gener
 - **Throughput**: `rate(rag_queries_total[5m])`
 - **Error Rate**: `rate(rag_errors_total[5m])`
 
-## 3. Alerting Rules
+## 3. Example alert thresholds (not configured)
 
 | Alert Name | Condition | Severity | Action |
 |-----------|-----------|----------|--------|
 | Low NDCG | `avg(rag_ndcg_score) < 0.6` | Warning | Review recent index updates or reranker model. |
 | Confidence Drop | `avg(rag_confidence_score) < 0.4` | Critical | Investigate LLM prompt or document coverage. |
-| High Error Rate | `rate(rag_errors_total[1m]) > 5%` | Critical | Check LLM API availability and system logs. |
+| High Error Rate | `sum(rate(rag_errors_total[5m])) / clamp_min(sum(rate(rag_queries_total[5m])), 1) > 0.05` | Critical | Check model availability and system logs. |
 
 ## 4. Implementation Notes
-- Metrics are exposed via the `/metrics` endpoint using the `prometheus_client` library.
-- The `HybridRAG` orchestrator updates these gauges on every successful query.
-- Dashboard is configured to filter by `mode` (simple, multi-turn, decompose, structured).
+- The metrics endpoint is mounted at `/metrics` in `api/main.py`.
+- Metric definitions and labels are in `observability/metrics.py`.
+- The NDCG and confidence gauges have a `mode` label. Query latency uses a `mode` label; query totals use `mode` and `status`.
+- This repository does not provision Grafana panels or alert rules.
 
 ## 5. Query Analytics Integration
 In addition to real-time metrics, the system implements a persistent analytics store:
-- **Storage**: Queries are logged to `data/analytics/query_logs.jsonl`.
-- **Analysis**: The `/analytics/summary` endpoint provides distributions of intents, modes, and cache hit rates.
-- **Failure Analysis**: The `/analytics/failures` endpoint allows developers to isolate low-confidence or errored queries for targeted dataset improvement.
+- **Analysis**: `GET /analytics/summary` provides aggregate query-pattern analysis.
+- **Latency**: `GET /analytics/latency` returns stage-level latency and cache correlation.
+- **Failure Analysis**: `GET /analytics/failures` returns recorded failed or low-confidence queries.

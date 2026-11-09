@@ -2,7 +2,7 @@
 
 ## Decision
 
-Improve context engineering before introducing an AI agent. The current system already has retrieval, query understanding, memory, reranking, validation, and streaming. Context engineering will make those components produce a reliable, bounded prompt before adding autonomous tool selection.
+Context engineering was implemented before adding autonomous tool selection. The current system has retrieval, query understanding, memory, reranking, validation, and streaming, along with a separate bounded goal-directed agent described in [Agent Architecture](../architecture/agent.md). This plan records the context-engineering work and its evaluation status.
 
 ## Goals
 

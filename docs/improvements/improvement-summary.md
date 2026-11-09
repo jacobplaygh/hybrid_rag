@@ -15,7 +15,7 @@ Current implementation status for the Hybrid RAG system.
 
 - Only registered read-only tools can be called; arbitrary code, writes, and external actions are not exposed.
 - Each run has a configurable maximum of 1–6 tool steps, a maximum retrieval size of 10, per-call result-size limits, and tool timeouts.
-- Document requests require retrieval evidence before the agent can finish.
+- Document requests require a hybrid `search` call before the agent can finish; GraphRAG is an additional tool, not a substitute for that required search.
 - The response includes tool steps, retrieved documents, citations, and validation status; reaching the step limit is reported explicitly.
 - The existing `/api/query/` and `/api/query/agent` endpoints remain available and unchanged.
 
