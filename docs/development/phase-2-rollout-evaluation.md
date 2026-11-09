@@ -17,7 +17,7 @@
 
 ## Decision
 
-Do not make agentic retrieval the unconditional default yet. Keep `AGENTIC_LOOP_ENABLED` configurable and use the baseline path as the production-safe default until the agentic path preserves success rate and does not regress context relevance or groundedness.
+Do not make agentic retrieval the unconditional default yet. `AGENTIC_LOOP_ENABLED` is configurable and defaults to `false`, so the baseline retrieval path remains the production-safe default until the agentic path preserves success rate and does not regress context relevance or groundedness. Set `AGENTIC_LOOP_ENABLED=true` to opt in to the iterative retrieval loop.
 
 The confidence improvement is useful, but confidence alone is not a sufficient rollout signal. The current evaluation also exposes a measurement weakness: answer-level relevance scores are sparse, so the dataset and scoring should be improved before using this as a release gate.
 

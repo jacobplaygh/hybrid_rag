@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import re
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
 import uuid
@@ -60,7 +61,8 @@ class HybridRetriever:
         self.use_reranker = use_reranker and HAS_LANGCHAIN and reranker is not None
         self.reranker = reranker if self.use_reranker else None
         self.retrieval_history: Dict[str, Dict[str, Any]] = {}
-        
+        self._last_query: Optional[str] = None
+
         # Initialize BM25 with documents
         self.all_documents: List[Dict[str, Any]] = []
         self.bm25 = None
@@ -100,7 +102,8 @@ class HybridRetriever:
         retrieval_time_start = datetime.now(timezone.utc)
         
         logger.debug(f"Retrieving for query: {query}")
-        
+        self._last_query = query
+
         # Semantic search
         semantic_results = await self.semantic_retrieve(query, top_k)
         
@@ -203,19 +206,18 @@ class HybridRetriever:
         """Combine semantic and keyword results with weighted scoring."""
         # Build score maps
         combined_map: Dict[str, RetrievedDoc] = {}
-        
+
         # Add semantic results
         for i, doc in enumerate(semantic):
             normalized_score = (1.0 - i / len(semantic)) * alpha if semantic else 0
             combined_map[doc.doc_id] = doc
             combined_map[doc.doc_id].score = normalized_score
             combined_map[doc.doc_id].retrieval_method = "hybrid"
-        
+
         # Add/update with keyword results
         for i, doc in enumerate(keyword):
             normalized_score = (1.0 - i / len(keyword)) * (1.0 - alpha) if keyword else 0
             if doc.doc_id in combined_map:
-                # Average the scores
                 combined_map[doc.doc_id].score = (
                     combined_map[doc.doc_id].score + normalized_score
                 ) / 2
@@ -223,8 +225,33 @@ class HybridRetriever:
                 doc.score = normalized_score
                 doc.retrieval_method = "hybrid"
                 combined_map[doc.doc_id] = doc
-        
-        # Sort by score
+
+        query_terms = {
+            token
+            for token in re.findall(
+                r"[a-zA-Z0-9]+",
+                (self._last_query or "").lower(),
+            )
+            if len(token) > 2
+        }
+        if not query_terms:
+            combined = sorted(combined_map.values(), key=lambda x: x.score, reverse=True)
+            return combined
+
+        for doc in combined_map.values():
+            text = (doc.content or "").lower()
+            tokens = set(re.findall(r"[a-zA-Z0-9]+", text))
+            overlap = len(query_terms & tokens)
+            genericity = len(tokens) / max(len(query_terms | tokens), 1)
+            relevance_boost = overlap / max(len(query_terms), 1)
+            doc.score = (
+                doc.score
+                + relevance_boost
+                + (0.05 if overlap > 0 else 0.0)
+                - (0.05 if genericity > 0.9 and overlap == 0 else 0.0)
+            )
+
+        # Ensure query-specific matches rank above generic background matches.
         combined = sorted(combined_map.values(), key=lambda x: x.score, reverse=True)
         return combined
     
@@ -234,7 +261,11 @@ class HybridRetriever:
         results: List[RetrievedDoc],
         top_k: int = 3,
     ) -> List[RetrievedDoc]:
-        """Rerank results with an LLM-based relevance model, falling back to the existing score order when unavailable."""
+        """Rerank results using the LLM model when available.
+
+        Falls back to the existing score order if the reranker is unavailable or
+        fails to return usable JSON.
+        """
         if not results:
             return []
 

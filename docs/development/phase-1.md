@@ -1,4 +1,6 @@
-# Phase 1a: FastAPI Backend Core Setup
+# Phase 1a: FastAPI Backend Core Setup (Historical Plan)
+
+> This is an early implementation plan, not a description of current project status. For current setup, routes, and configuration, use the [quick start](../getting-started/quick-start.md), [architecture overview](../architecture/overview.md), and [API docs](http://localhost:8000/docs).
 
 ## Overview
 
@@ -96,7 +98,7 @@ curl http://localhost:8000/health
 # Visit: http://localhost:8000/redoc (ReDoc)
 ```
 
-## Current Status: Phase 1a Foundation
+## Status at the time of this plan: Phase 1a Foundation
 
 ### ✅ Completed
 - [x] FastAPI application skeleton with CORS, error handlers, lifespan events

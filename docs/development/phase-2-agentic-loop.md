@@ -1,9 +1,6 @@
-# Phase 2.1: Agentic Retrieval Loop Implementation
+# Phase 2.1: Agentic Retrieval Loop (Design Notes)
 
-**Status:** In Development  
-**Start Date:** August 31, 2026  
-**Target Completion:** Week 2 of Phase 2 (2 weeks)  
-**Priority:** 🔴 CRITICAL (Highest ROI)
+> The iterative retrieval loop is implemented, but this document is a historical design proposal; its pseudocode, targets, and example defaults are not the runtime contract. The code defaults `AGENTIC_LOOP_ENABLED` to `false` pending the [rollout evaluation](./phase-2-rollout-evaluation.md). See `api/config.py` and `rag/agentic_loop.py` for current behavior.
 
 ---
 
@@ -94,8 +91,8 @@ Orchestrates the iterative retrieval process.
 **Configuration:**
 ```python
 class AgenticLoopConfig:
-    max_retries: int = 2
-    confidence_threshold: float = 0.7
+    max_retries: int = 3
+    confidence_threshold: float = 0.55
     use_query_reformulation: bool = True
     retry_strategy: str = "reformulate"  # or "broaden", "hybrid"
     log_retry_attempts: bool = True
@@ -327,9 +324,9 @@ Add to `api/config.py`:
 ```python
 class Settings:
     # Agentic Loop Configuration
-    AGENTIC_LOOP_ENABLED: bool = True
-    AGENTIC_MAX_RETRIES: int = 2
-    AGENTIC_CONFIDENCE_THRESHOLD: float = 0.7
+    AGENTIC_LOOP_ENABLED: bool = False
+    AGENTIC_MAX_RETRIES: int = 3
+    AGENTIC_CONFIDENCE_THRESHOLD: float = 0.55
     AGENTIC_REFORMULATION_STRATEGY: str = "auto"  # or "add_keywords", "broaden"
     AGENTIC_LOG_RETRIES: bool = True
     AGENTIC_TIMEOUT_SECONDS: int = 30
@@ -535,5 +532,4 @@ After Phase 2.1 is complete and stable:
 
 - Phase 1-5 (Context Engineering): `context-engineering-plan.md`
 - Existing Components: `rag/confidence_scorer.py`, `rag/retrieval.py`, `rag/query_understanding.py`
-- Integration Plan: `IMPLEMENTATION_ROADMAP.md` (Phase 2)
-
+- Current status: [Implementation Roadmap](../improvements/implementation-roadmap.md) and [rollout evaluation](./phase-2-rollout-evaluation.md)

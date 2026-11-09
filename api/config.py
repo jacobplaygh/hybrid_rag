@@ -79,7 +79,7 @@ class Settings(BaseSettings):
     SEMANTIC_CACHE_THRESHOLD: float = float(os.getenv("SEMANTIC_CACHE_THRESHOLD", "0.9"))
 
     # Agentic Loop
-    AGENTIC_LOOP_ENABLED: bool = os.getenv("AGENTIC_LOOP_ENABLED", "True").lower() == "true"
+    AGENTIC_LOOP_ENABLED: bool = os.getenv("AGENTIC_LOOP_ENABLED", "False").lower() == "true"
     AGENTIC_MAX_RETRIES: int = int(os.getenv("AGENTIC_MAX_RETRIES", 3))
     AGENTIC_CONFIDENCE_THRESHOLD: float = float(os.getenv("AGENTIC_CONFIDENCE_THRESHOLD", "0.55"))
     AGENTIC_REFORMULATION_STRATEGY: str = os.getenv("AGENTIC_REFORMULATION_STRATEGY", "auto")

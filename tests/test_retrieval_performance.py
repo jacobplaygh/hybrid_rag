@@ -142,6 +142,37 @@ def hybrid_retriever(sample_documents: List[Dict[str, Any]]) -> HybridRetriever:
     return retriever
 
 
+def test_hybrid_retrieval_prefers_query_specific_documents():
+    """Hybrid retrieval should rank documentation that directly matches the query higher than generic background text."""
+    documents = [
+        {
+            "doc_id": "generic_backend",
+            "content": "The application backend handles services, runtime configuration, and environment settings across deployment tiers.",
+            "source": "ops.txt",
+            "metadata": {"category": "operations"},
+        },
+        {
+            "doc_id": "fastapi_config",
+            "content": "FastAPI backend setup and environment configuration for Python services includes app startup, routes, and runtime variables.",
+            "source": "fastapi.txt",
+            "metadata": {"category": "framework"},
+        },
+    ]
+    vector_store = MockVectorStore(documents)
+    retriever = HybridRetriever(vector_store=vector_store, use_reranker=False)
+    asyncio.run(retriever.index_documents(documents))
+
+    results, _ = asyncio.run(
+        retriever.retrieve(
+            "What is the FastAPI backend setup and environment configuration?",
+            top_k=2,
+            alpha=0.5,
+        )
+    )
+
+    assert results[0].doc_id == "fastapi_config"
+
+
 class TestBM25Performance:
     """Test BM25 keyword search performance."""
     

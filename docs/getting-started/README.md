@@ -38,10 +38,10 @@ The system retrieves relevant documents and uses them to generate accurate answe
 | BM25 Retrieval | ✅ Working |
 | Semantic Search | ✅ Working |
 | Hybrid Search | ✅ Working |
-| LLM Integration | ✅ Working |
+| LLM Integration | ✅ Optional (requires NVIDIA API key) |
 | API Endpoints | ✅ Working |
 | Web UI | ✅ Working |
-| Tests | ✅ 35/35 passing |
+| Tests | Automated suite in `tests/`; see the [testing guide](../development/testing.md) for commands |
 
 ## 🎓 Learning Path
 
